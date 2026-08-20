@@ -24,12 +24,15 @@ using detail::kBlockSizeBytes;
 constexpr std::uint64_t kMaxBlocks = (std::uint64_t{1} << 32) - 2;
 constexpr std::uint64_t kMaxPlaintextBytes = kMaxBlocks * kBlockSizeBytes;
 
+// aesNNN_encrypt_block_hw() resolves to the AES-NI or ARM Crypto Extensions
+// backend depending on the build's target architecture (see aes_core_hw.cpp)
+// — this file never names either directly.
 Block encrypt_block(const SecretKey& key, const Block& block) {
     const bool hw = active_backend() == Backend::Hardware;
     if (key.size_bytes() == 16) {
-        return hw ? detail::aes128_encrypt_block_ni(key, block) : detail::aes128_encrypt_block_soft(key, block);
+        return hw ? detail::aes128_encrypt_block_hw(key, block) : detail::aes128_encrypt_block_soft(key, block);
     }
-    return hw ? detail::aes256_encrypt_block_ni(key, block) : detail::aes256_encrypt_block_soft(key, block);
+    return hw ? detail::aes256_encrypt_block_hw(key, block) : detail::aes256_encrypt_block_soft(key, block);
 }
 
 // Same nonce||counter construction as Aes256Ctr's make_counter_block (see

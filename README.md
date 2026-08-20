@@ -1,9 +1,10 @@
 # aeslib
 
 A small C++17 library implementing AES-256-CTR and AES-GCM (AES-128 or
-AES-256) encryption/decryption with runtime dispatch between an AES-NI
-hardware path and a portable software fallback, plus a minimal versioned
-container format for storing encrypted data separately from its key.
+AES-256) encryption/decryption with runtime dispatch between a hardware path
+(AES-NI on amd64, ARM AArch64 Crypto Extensions on arm64) and a portable
+software fallback, plus a minimal versioned container format for storing
+encrypted data separately from its key.
 
 See [DESIGN.md](DESIGN.md) for the architecture, the hardware/software
 dispatch mechanism, the on-disk container formats, and the nonce strategy.
@@ -23,8 +24,9 @@ dispatch mechanism, the on-disk container formats, and the nonce strategy.
   `aeslib::save_gcm_container` / `load_gcm_container` (GCM), plus
   `SecretKey::save_to_file` / `load_from_file` — persist ciphertext and key
   to **separate** files.
-- `aeslib::active_backend()` — reports whether the hardware (AES-NI) or
-  software AES path is in use on the current machine.
+- `aeslib::active_backend()` — reports whether the hardware (AES-NI on
+  amd64, ARM Crypto Extensions on arm64) or software AES path is in use on
+  the current machine.
 
 ## Build instructions
 
@@ -122,21 +124,56 @@ ctest --test-dir build-san --output-on-failure
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push/PR: native build+test on
-Linux (GCC) and Windows (MSVC), an ASan+UBSan build, a cross-compiled
-aarch64 build run under `qemu-aarch64`, and — the interesting one — the
-*same compiled x86_64 binary* run twice under `qemu-x86_64` with two
-different emulated CPU models, one advertising AES-NI and one without. That
-directly exercises brief 2.2's requirement that a single binary pick the
-correct path on two different machines, rather than relying on it having
-only ever been built and run on one. See DESIGN.md's "How the dispatch is
-verified" section for how this was validated and its limitations.
+Linux (GCC) and Windows (MSVC), an ASan+UBSan build, and — the interesting
+part — the *same compiled binary* run twice under QEMU with two different
+emulated CPU models, once for x86_64 (`qemu-aes-on`/`qemu-aes-off`, one
+model with AES-NI and one without) and once for a cross-compiled aarch64
+binary (`qemu-aarch64-crypto-on`/`qemu-aarch64-crypto-off`, one model with
+AArch64 Crypto Extensions and one without). That directly exercises brief
+2.2's requirement that a single binary pick the correct path on two
+different machines, rather than relying on it having only ever been built
+and run on one. Two more jobs (`macos-arm64` on real Apple Silicon,
+`linux-arm64-native` on a GitHub-hosted Arm Linux runner) build and test
+natively on genuine ARM64 hardware, complementing the emulated legs. See
+DESIGN.md's "How the dispatch is verified" section for how this was
+validated and its limitations.
 
 ## Scope
 
-This submission implements the challenge's core requirements plus five
-Section 3 bonus objectives: the unit-test suite (3.1), safer key storage (3.4),
+This submission implements the challenge's core requirements plus six
+Section 3 bonus objectives: the unit-test suite (3.1), additional
+architectures (3.2 — ARM AArch64 Crypto Extensions), safer key storage (3.4),
 key generation ergonomics (3.5), minimizing key exposure in memory (3.6), and
 additional AES modes (AES-128 + AES-GCM).
+
+**Bonus 3.2 — Additional architectures**: `src/aes_core_arm.cpp` adds a
+second hardware backend, AES-256/AES-128 forward-cipher encryption using
+AArch64 Crypto Extensions intrinsics (`vaeseq_u8`/`vaesmcq_u8`), detected at
+runtime the same way AES-NI is (never compile-time-baked-in) via
+`getauxval(AT_HWCAP)` on Linux, `sysctlbyname("hw.optional.arm.FEAT_AES")` on
+macOS, or `IsProcessorFeaturePresent(PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE)`
+on Windows ARM64. `Aes256Ctr`/`AesGcm` needed no code changes to support it:
+a new `src/aes_core_hw.cpp` centralizes the choice between the AES-NI and
+ARM backends behind arch-neutral `aesNNN_encrypt_block_hw()` wrappers, so the
+mode logic that used to call the AES-NI functions by name now calls those
+instead. Unlike AES-NI, ARM's Crypto Extensions have no dedicated
+key-expansion instruction, so the round-key schedule is shared with the
+software backend (`src/aes_key_schedule.hpp`) rather than reimplemented a
+third time. See DESIGN.md's "ARM AArch64 Crypto Extensions" section for the
+round-loop derivation and why RISC-V would be the next straightforward
+architecture given this abstraction.
+
+Test coverage: the existing hardware-path KATs and soft/hardware
+cross-checks in `aeslib.aes_core` now run against whichever backend the
+build targets (via `_hw`, not the AES-NI functions directly), so they
+validate ARM for free on ARM hardware; a new
+`expand_key_matches_fips197_appendix_a3` test checks the shared schedule
+directly against FIPS-197's published AES-256 key expansion; CI runs the
+cross-compiled aarch64 binary under QEMU with crypto extensions toggled on
+and off (`qemu-aarch64-crypto-on`/`-off`, mirroring the existing amd64 jobs),
+plus two native ARM64 jobs (`macos-arm64` on Apple Silicon,
+`linux-arm64-native` on a GitHub-hosted Arm Linux runner) confirming the
+real hardware path on two different real chips.
 
 **Bonus 3.4 — Safer key storage**: `SecretKey::save_to_file_encrypted(path,
 passphrase, iterations)` and `load_from_file_encrypted(path, passphrase)`
@@ -155,7 +192,7 @@ key bytes; the only sanctioned way to get key material out is the explicit
 **Bonus 3.6 — Minimizing key exposure in memory**: `SecretKey` locks its backing
 pages against swap (`mlock`/`VirtualLock`, plus `madvise(MADV_DONTDUMP)` on Linux
 to exclude from core dumps); file I/O uses raw syscalls to avoid iostream
-streambuf copies; both AES backends wipe derived round-key schedules after each
+streambuf copies; all AES backends wipe derived round-key schedules after each
 block. See DESIGN.md for threat model (protects against offline key theft,
 tampering detection via HMAC, precomputation via random salt; does *not*
 protect against weak passphrases, keyloggers, or live attacker on machine).
@@ -317,9 +354,31 @@ this submission. Specifically:
   against a from-scratch Python re-implementation of GF(2^128)
   multiplication, independent of both. See DESIGN.md's "Additional AES
   modes" section for the full design rationale and scope limitations.
+- **Additional architectures (bonus 3.2 — ARM AArch64 Crypto Extensions)** —
+  upfront research against ARM's ACLE intrinsics reference, existing
+  open-source AArch64 Crypto Extensions backends (mbedTLS's `aesce.c`,
+  Botan's `aes_armv8.cpp`) for the standard `vaeseq_u8`/`vaesmcq_u8` round
+  loop shape, and each OS's runtime-detection API (Linux `getauxval`, Apple's
+  `sysctlbyname` documentation, Microsoft's `IsProcessorFeaturePresent`)
+  before implementing. The claim that `vaeseq_u8`'s fused
+  AddRoundKey+SubBytes+ShiftRows reproduces standard FIPS-197 encryption was
+  independently verified algebraically (SubBytes/ShiftRows commute, since
+  ShiftRows only permutes byte positions) rather than trusted from a single
+  reference implementation. Extracting the shared `expand_key<Nk,Nr>`
+  template out of `aes_core_soft.cpp` into `aes_key_schedule.hpp` — so the
+  new ARM backend didn't need a third hand-written key-schedule routine —
+  and the centralized `aes_core_hw.cpp` dispatch wrapper were both design
+  decisions made and reviewed by the author, not auto-generated. GitHub's
+  hosted Arm64 runner availability (`ubuntu-24.04-arm`, and `macos-14`'s
+  Apple Silicon) was confirmed against GitHub's own documentation before
+  designing the CI jobs around it. All new code was built and its test
+  suite run locally on real Apple Silicon hardware (confirming the real
+  AArch64 Crypto Extensions path, not just the x86 stub) before being
+  considered complete. See DESIGN.md's "ARM AArch64 Crypto Extensions"
+  section for the full design rationale.
 - **Documentation** — this README and DESIGN.md (with updated Scope and feature descriptions).
 
-All code was reviewed and is understood by the author. Both backends are
+All code was reviewed and is understood by the author. All backends are
 validated against the official FIPS-197 Appendix C.3 (AES-256) and Appendix
 C.1 (AES-128) known-answer tests on every CI run, and the documented
 limitations of the QEMU-based dispatch verification (see DESIGN.md) reflect

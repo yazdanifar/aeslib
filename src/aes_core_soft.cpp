@@ -1,30 +1,24 @@
 #include <array>
 #include <cstdint>
 
+#include "aes_key_schedule.hpp"
 #include "internal.hpp"
 
 // Portable, from-scratch AES forward cipher (FIPS-197), used when the CPU
-// has no AES-NI. CTR/GCM only ever need AES *encryption* — decryption
-// (InvSubBytes/InvMixColumns/etc.) is never used, since both modes produce
-// their keystream by encrypting counter blocks regardless of whether the
-// caller is encrypting or decrypting the message itself.
+// has no hardware AES acceleration. CTR/GCM only ever need AES *encryption*
+// — decryption (InvSubBytes/InvMixColumns/etc.) is never used, since both
+// modes produce their keystream by encrypting counter blocks regardless of
+// whether the caller is encrypting or decrypting the message itself.
 //
 // Parameterized by (Nk, Nr) so the same code serves both AES-256 (Nk=8,
-// Nr=14) and AES-128 (Nk=4, Nr=10) — see aes_encrypt_block_soft below.
+// Nr=14) and AES-128 (Nk=4, Nr=10) — see aes_encrypt_block_soft below. The
+// round-key schedule itself (expand_key<Nk,Nr>) lives in aes_key_schedule.hpp
+// so it can be shared with the ARM Crypto Extensions backend, which has no
+// dedicated key-expansion instruction of its own (see that header's comment).
 
 namespace aeslib::detail {
 
 namespace {
-
-// Round constants (FIPS-197 5.2), indices 0..10. The AES-256 schedule (Nk=8)
-// only ever reads indices 1..7; AES-128 (Nk=4) reads indices 1..10.
-constexpr std::array<std::uint8_t, 11> kRcon = {
-    0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36,
-};
-
-constexpr int kNb = 4; // words per state block
-
-using Word = std::array<std::uint8_t, 4>;
 
 std::uint8_t xtime(std::uint8_t b) {
     return static_cast<std::uint8_t>((b << 1) ^ ((b & 0x80) ? 0x1b : 0x00));
@@ -80,48 +74,7 @@ std::uint8_t ct_sbox(std::uint8_t x) {
 
 namespace {
 
-Word sub_word(Word w) {
-    for (auto& b : w) b = ct_sbox(b);
-    return w;
-}
-
-Word rot_word(Word w) { return Word{w[1], w[2], w[3], w[0]}; }
-
-Word xor_word(Word a, Word b) {
-    return Word{static_cast<std::uint8_t>(a[0] ^ b[0]), static_cast<std::uint8_t>(a[1] ^ b[1]),
-                static_cast<std::uint8_t>(a[2] ^ b[2]), static_cast<std::uint8_t>(a[3] ^ b[3])};
-}
-
-// Expands an Nk*32-bit key into the 4*(Nr+1)-word round-key schedule
-// (FIPS-197 5.2). The "extra SubWord step for Nk>6" branch (i % Nk == 4) is
-// written generically and is naturally dead for Nk=4 (i%4 never equals 4),
-// so AES-128's simpler schedule falls out automatically with no separate
-// code path.
-template <int Nk, int Nr>
-std::array<Word, kNb*(Nr + 1)> expand_key(const SecretKey& key) {
-    constexpr int kScheduleWords = kNb * (Nr + 1);
-    std::array<Word, kScheduleWords> schedule{};
-    const auto& kb = key_bytes(key);
-
-    for (int i = 0; i < Nk; ++i) {
-        schedule[static_cast<std::size_t>(i)] = Word{static_cast<std::uint8_t>(kb[4 * i]),
-                                                       static_cast<std::uint8_t>(kb[4 * i + 1]),
-                                                       static_cast<std::uint8_t>(kb[4 * i + 2]),
-                                                       static_cast<std::uint8_t>(kb[4 * i + 3])};
-    }
-
-    for (int i = Nk; i < kScheduleWords; ++i) {
-        Word temp = schedule[static_cast<std::size_t>(i - 1)];
-        if (i % Nk == 0) {
-            temp = xor_word(sub_word(rot_word(temp)), Word{kRcon[static_cast<std::size_t>(i / Nk)], 0, 0, 0});
-        } else if (Nk > 6 && i % Nk == 4) {
-            // Extra SubWord step required for Nk=8 (FIPS-197 5.2, Nk > 6 case).
-            temp = sub_word(temp);
-        }
-        schedule[static_cast<std::size_t>(i)] = xor_word(schedule[static_cast<std::size_t>(i - Nk)], temp);
-    }
-    return schedule;
-}
+constexpr int kNb = kScheduleNb; // words per state block
 
 template <int Nr>
 void add_round_key(std::array<std::uint8_t, 16>& state, const std::array<Word, kNb*(Nr + 1)>& schedule, int round) {
@@ -145,18 +98,6 @@ void shift_rows(std::array<std::uint8_t, 16>& state) {
             state[static_cast<std::size_t>(col * 4 + row)] = s[static_cast<std::size_t>(((col + row) % 4) * 4 + row)];
         }
     }
-}
-
-// The round-key schedule is a direct, reversible function of the raw key —
-// just as sensitive as the key itself, and recomputed on every block (CTR/GCM
-// call this once per 16 bytes of keystream), so it's wiped the same way
-// SecretKey::wipe() wipes the key: a volatile byte-level loop so the
-// compiler can't drop it as a dead store right before the array goes out of
-// scope.
-template <int Nr>
-void wipe_schedule(std::array<Word, kNb*(Nr + 1)>& schedule) noexcept {
-    auto* bytes = reinterpret_cast<volatile std::uint8_t*>(schedule.data());
-    for (std::size_t i = 0; i < sizeof(Word) * schedule.size(); ++i) bytes[i] = 0;
 }
 
 void mix_columns(std::array<std::uint8_t, 16>& state) {

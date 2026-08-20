@@ -13,6 +13,8 @@ add_library(aeslib STATIC
   src/aes256_ctr.cpp
   src/aes_core_soft.cpp
   src/aes_core_ni.cpp
+  src/aes_core_arm.cpp
+  src/aes_core_hw.cpp
   src/aes_gcm.cpp
   src/ghash.cpp
   src/cpu_detect.cpp
@@ -31,8 +33,16 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|i.86)$")
   set(AESLIB_TARGET_IS_X86 TRUE)
 endif()
 
+set(AESLIB_TARGET_IS_ARM64 FALSE)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+  set(AESLIB_TARGET_IS_ARM64 TRUE)
+endif()
+
 if(MSVC)
   target_compile_options(aeslib PRIVATE /W4)
+  # No extra flag needed for ARM64 crypto intrinsics under MSVC/clang-cl:
+  # <arm_neon.h>'s AES intrinsics are available unconditionally when
+  # targeting ARM64, unlike GCC/Clang which need -march=...+crypto below.
 else()
   target_compile_options(aeslib PRIVATE -Wall -Wextra)
   if(AESLIB_TARGET_IS_X86)
@@ -42,6 +52,11 @@ else()
     # runtime dispatch (see cpu_detect.cpp) actually portable across
     # machines.
     set_source_files_properties(src/aes_core_ni.cpp PROPERTIES COMPILE_OPTIONS "-maes")
+  elseif(AESLIB_TARGET_IS_ARM64)
+    # Same rationale as -maes above, scoped to aes_core_arm.cpp: AArch64
+    # Crypto Extensions intrinsics need +crypto on GCC/Clang, and only this
+    # one translation unit should ever emit them.
+    set_source_files_properties(src/aes_core_arm.cpp PROPERTIES COMPILE_OPTIONS "-march=armv8-a+crypto")
   endif()
 endif()
 

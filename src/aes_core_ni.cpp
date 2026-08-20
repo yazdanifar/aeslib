@@ -3,9 +3,9 @@
 
 #include "internal.hpp"
 
-// AES-256 forward cipher using amd64 AES-NI intrinsics. Only ever reached
-// when cpu::has_aes_ni() returned true (see aes256_ctr.cpp's dispatch), so
-// it's safe to assume the instructions exist here.
+// AES forward cipher using amd64 AES-NI intrinsics. Only ever reached when
+// cpu::has_hw_aes() returned true (see aes_core_hw.cpp's dispatch), so it's
+// safe to assume the instructions exist here.
 //
 // This translation unit is compiled with -maes (see CMakeLists.txt) even
 // though the rest of the binary is not, so the AES-NI instructions this file

@@ -21,10 +21,13 @@ constexpr std::uint64_t kMaxBlocks = std::uint64_t{1} << 32;
 constexpr std::uint64_t kMaxPlaintextBytes = kMaxBlocks * kBlockSizeBytes;
 
 Block encrypt_block(const SecretKey& key, const Block& block) {
-    // Decided once per call via the runtime CPUID check in cpu_detect.cpp —
-    // never a compile-time #ifdef, so the same binary is correct whether or
-    // not the host CPU has AES-NI.
-    return active_backend() == Backend::Hardware ? detail::aes256_encrypt_block_ni(key, block)
+    // Decided once per call via the runtime capability check in
+    // cpu_detect.cpp — never a compile-time #ifdef, so the same binary is
+    // correct whether or not the host CPU has hardware AES acceleration.
+    // aes256_encrypt_block_hw() resolves to the AES-NI or ARM Crypto
+    // Extensions backend depending on the build's target architecture (see
+    // aes_core_hw.cpp) — this file never names either directly.
+    return active_backend() == Backend::Hardware ? detail::aes256_encrypt_block_hw(key, block)
                                                   : detail::aes256_encrypt_block_soft(key, block);
 }
 

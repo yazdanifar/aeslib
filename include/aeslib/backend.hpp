@@ -7,13 +7,13 @@ namespace aeslib {
 // Aes256Ctr never need to look at this.
 enum class Backend {
     Software,  // Portable, no CPU-specific instructions.
-    Hardware,  // AES-NI intrinsics (amd64 only).
+    Hardware,  // AES-NI on amd64, AArch64 Crypto Extensions on arm64.
 };
 
 // Returns the backend Aes256Ctr will actually use on this machine, decided
-// once at first use via a runtime CPUID check (see cpu_detect.cpp) — never
-// baked in at compile time, so the same binary picks the right path on any
-// amd64 host.
+// once at first use via a runtime CPU-capability check (see cpu_detect.cpp)
+// — never baked in at compile time, so the same binary picks the right path
+// on any host of a supported architecture.
 Backend active_backend();
 
 } // namespace aeslib

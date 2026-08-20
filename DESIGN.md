@@ -14,11 +14,21 @@ include/aeslib/       public API headers
 src/                   implementation
   aes256_ctr.cpp        CTR-mode driver: builds counter blocks, dispatches
                          to a backend, XORs the keystream
-  aes_core_soft.cpp      portable AES-256 forward cipher (FIPS-197), no
+  aes_core_soft.cpp      portable AES forward cipher (FIPS-197), no
                          intrinsics, used as the fallback
-  aes_core_ni.cpp        AES-256 forward cipher using AES-NI intrinsics,
-                         used when the CPU supports it
-  cpu_detect.cpp          runtime CPUID check
+  aes_core_ni.cpp        AES forward cipher using AES-NI intrinsics
+                         (amd64), used when the CPU supports it
+  aes_core_arm.cpp        AES forward cipher using AArch64 Crypto
+                         Extensions intrinsics (arm64), used when the CPU
+                         supports it (bonus 3.2)
+  aes_core_hw.cpp         the one file that knows there's more than one
+                         hardware backend — arch-neutral aesNNN_..._hw()
+                         wrappers CTR/GCM call instead of _ni/_arm directly
+  aes_key_schedule.hpp    shared FIPS-197 key-expansion template, used by
+                         both aes_core_soft.cpp and aes_core_arm.cpp
+  cpu_detect.cpp          runtime hardware-AES capability check (CPUID on
+                         amd64; HWCAP/sysctl/IsProcessorFeaturePresent on
+                         arm64, depending on OS)
   csprng.cpp              OS CSPRNG wrapper
   key.cpp, container.cpp  key/container (de)serialization and file I/O
   internal.hpp             shared declarations, not part of the public API
@@ -27,35 +37,52 @@ main.cpp                end-to-end harness (see README.md)
 
 ## Hardware/software dispatch
 
-`aeslib::active_backend()` runs a CPUID check (`CPUID.1:ECX.AESNI`, bit 25)
-the first time it's called and memoizes the result in a function-local
-static — so the decision is made once, at runtime, on whatever machine the
-binary happens to be running on. It is never baked in via `#ifdef __AES__`
-or `-march=native`; the same compiled binary takes the hardware path on an
-AES-NI-capable host and the software path on one without, which is what lets
-one binary be correct on both. `Aes256Ctr` calls `active_backend()`
-internally to pick which block-encrypt function to call; callers of the
-public API never see this decision, but it's exposed as a free function so
-tests/diagnostics can observe (and the `main.cpp` harness prints) which path
-actually ran.
+`aeslib::active_backend()` runs a hardware-capability check the first time
+it's called and memoizes the result in a function-local static — so the
+decision is made once, at runtime, on whatever machine the binary happens to
+be running on. It is never baked in via `#ifdef __AES__` or `-march=native`;
+the same compiled binary takes the hardware path on a capable host and the
+software path on one without, which is what lets one binary be correct on
+both. What that check actually is depends on the build's target
+architecture — `CPUID.1:ECX.AESNI` (bit 25) on amd64, or one of three
+OS-specific reads of the AArch64 Crypto Extensions feature bit on arm64
+(bonus 3.2, see below) — but the caller-facing shape is identical either way:
+`cpu::has_hw_aes()` returns one bool, `active_backend()` turns that into
+`Backend::Hardware`/`Backend::Software`. `Aes256Ctr`/`AesGcm` call
+`active_backend()` internally to pick which block-encrypt function to call;
+callers of the public API never see this decision, but it's exposed as a
+free function so tests/diagnostics can observe (and the `main.cpp` harness
+prints) which path actually ran.
 
-The AES-NI code lives in its own translation unit (`aes_core_ni.cpp`) and is
-the *only* file compiled with `-maes` on GCC/Clang (see `CMakeLists.txt`);
-every other file — including the CTR driver that calls into it — stays
-free of any architecture-specific instruction set flags. That's what makes
-it safe to ship as one portable binary: the compiler never emits an AES-NI
-instruction outside that one file, and that file is only ever *called* after
-`cpu::has_aes_ni()` has confirmed the instructions are safe to execute.
+Each hardware backend's intrinsics live in their own translation unit
+(`aes_core_ni.cpp` for AES-NI, `aes_core_arm.cpp` for AArch64 Crypto
+Extensions) and are the *only* files compiled with an architecture-specific
+flag (`-maes` / `-march=armv8-a+crypto` on GCC/Clang, see `CMakeLists.txt`);
+every other file — including the CTR/GCM drivers that call into them —
+stays free of any architecture-specific instruction set flags. That's what
+makes it safe to ship as one portable binary: the compiler never emits a
+hardware-AES instruction outside those two files, and each is only ever
+*called* after `cpu::has_hw_aes()` has confirmed the corresponding
+instructions are safe to execute on this machine.
+
+Because there are now two possible hardware backends but never more than one
+real at once in a given build, `aes_core_hw.cpp` is the single seam that
+knows this: it exposes arch-neutral `aesNNN_encrypt_block_hw()` wrappers,
+implemented purely as `#if`/`#elif` on the target architecture (x86 → `_ni`,
+arm64 → `_arm`, anything else → throws). `aes256_ctr.cpp`/`aes_gcm.cpp` call
+only `_hw`, never `_ni`/`_arm` by name — so `Aes256Ctr`/`AesGcm` needed
+*zero* code changes to gain ARM support beyond that one wrapper file. See
+"ARM AArch64 Crypto Extensions (bonus 3.2)" below for what that unlocked.
 
 Because CTR mode only ever needs the forward AES transform (see below),
-both backends implement encryption only — there is no AES decryption
+all backends implement encryption only — there is no AES decryption
 routine anywhere in this codebase.
 
 ### How the dispatch is verified
 
-2.2 requires that the *same binary* be correct on a machine with AES-NI and
-one without. This is now verified on every push by `.github/workflows/ci.yml`
-rather than resting on a one-off manual session:
+2.2 requires that the *same binary* be correct on a machine with hardware AES
+acceleration and one without. This is verified on every push by
+`.github/workflows/ci.yml` rather than resting on a one-off manual session:
 
 1. `linux-x86_64` builds and tests natively on a GitHub-hosted runner (real
    AES-NI hardware — confirmed `Hardware` in the harness output) and uploads
@@ -68,12 +95,24 @@ rather than resting on a one-off manual session:
    var — one test binary, one build, two CPU identities, two different
    correct outcomes. This is brief 2.2's requirement made literal rather
    than approximated by building twice.
-3. `qemu-aarch64` cross-compiles for a genuinely different architecture and
-   runs it under `qemu-aarch64-static`, confirming the non-x86 branch of
-   `cpu_detect.cpp` (`AESLIB_X86` never defined) correctly reports no
-   hardware path and the software fallback is used.
+3. `linux-aarch64-cross-build` cross-compiles for a genuinely different
+   architecture and uploads that binary; `qemu-aarch64-crypto-on`/
+   `qemu-aarch64-crypto-off` run it under `qemu-aarch64-static -cpu max`
+   (Crypto Extensions present) and `-cpu cortex-a57` (absent) respectively —
+   the same same-binary-two-CPU-identities pattern as `qemu-aes-on`/`-off`,
+   now exercising `aes_core_arm.cpp`'s real implementation under emulation
+   rather than the throwing stub the pre-bonus-3.2 version of this codebase
+   compiled but never called.
+4. `macos-arm64` (`macos-14`, real Apple Silicon) and `linux-arm64-native`
+   (`ubuntu-24.04-arm`, a real Arm-hosted Linux runner) build and test
+   natively — no cross toolchain, no emulation — on two different genuine
+   ARM64 machines, both expected to report `Hardware` unconditionally. These
+   complement, not replace, the QEMU jobs: QEMU proves dispatch/correctness
+   under a *controlled, togglable* CPU model; these two prove the same code
+   behaves correctly on *real* silicon, which QEMU's TCG can't fully stand
+   in for (see the limitation noted below).
 
-Before writing this workflow, the core premise — that `qemu-x86_64 -cpu
+Before writing the amd64 jobs, the core premise — that `qemu-x86_64 -cpu
 <model>` actually controls what a guest binary's `CPUID` instruction
 reports, rather than passing through the host's real capabilities — was
 verified directly against GitHub's runners: probing with `-cpu Westmere`,
@@ -81,22 +120,27 @@ verified directly against GitHub's runners: probing with `-cpu Westmere`,
 `yes`/`yes`/`yes`/`no` respectively, exactly as expected.
 
 **Limitation worth stating plainly:** QEMU's TCG will generally still
-*execute* an `aesenc` instruction even when the CPUID feature bit is masked
-off — real silicon would `SIGILL`. So `qemu-aes-off` proves that (a) CPUID
-detection correctly reports AES-NI as absent under that model, and (b) the
-software path it falls back to is byte-correct — it does not prove that
-dispatch would crash safely-versus-silently-corrupt if the hardware branch
-were ever taken on real AES-NI-less hardware by mistake. That gap is closed
-by 1 and 2 above only insofar as the dispatch logic itself (a single `if` in
-`cpu_detect.cpp`) is simple enough to read completely; it is not closed by
-execution.
+*execute* an `aesenc` (or `AESE`/`AESMC`, on the aarch64 legs) instruction
+even when the CPUID/HWCAP feature bit is masked off — real silicon would
+`SIGILL`. So `qemu-aes-off`/`qemu-aarch64-crypto-off` prove that (a)
+detection correctly reports hardware AES as absent under that model, and (b)
+the software path each falls back to is byte-correct — they do not prove
+that dispatch would crash safely-versus-silently-corrupt if the hardware
+branch were ever taken on real hardware genuinely lacking the extension by
+mistake. That gap is closed by the dispatch logic itself (a handful of `#if`
+branches in `cpu_detect.cpp`, each reading one OS-provided capability flag)
+being simple enough to read completely; it is not closed by execution — which
+is exactly why the two native-hardware jobs (`macos-arm64`,
+`linux-arm64-native`) matter too: they run the real detection code against
+real silicon, not an emulator's approximation of it.
 
 A standalone known-answer test (FIPS-197 Appendix C.3, AES-256) is also run
-directly against `aes256_encrypt_block_ni()` and `aes256_encrypt_block_soft()`
+directly against `aes256_encrypt_block_hw()` and `aes256_encrypt_block_soft()`
 in `tests/test_aes_core.cpp`, confirming both produce the exact published
-ciphertext block for the same key/plaintext — i.e. the two backends don't
-just each "work", they agree with each other and with the published test
-vector, on every CI run.
+ciphertext block for the same key/plaintext — i.e. whichever hardware
+backend the build targets doesn't just "work" on its own, it agrees with the
+software backend and with the published test vector, on every CI run
+(including the new ARM legs).
 
 ### Constant-time software S-box
 
@@ -104,9 +148,10 @@ A textbook software AES implementation typically substitutes bytes via
 `kSBox[secret_byte]` — a lookup table indexed by key- and state-dependent
 data. That's a classical cache-timing side channel (Bernstein-style): which
 cache line the lookup touches depends on the secret byte, and that's
-observable by another process on the same core. The AES-NI backend never has
-this problem (`aesenc` is constant-time by construction), but the software
-fallback used to have it, silently, on any host without AES-NI.
+observable by another process on the same core. Neither hardware backend
+has this problem (`aesenc` and `AESE`/`AESMC` are both constant-time by
+construction), but the software fallback used to have it, silently, on any
+host without hardware AES acceleration.
 
 `src/aes_core_soft.cpp`'s `ct_sbox()` replaces the table with a computed
 substitution: GF(2^8) multiplicative inversion via a fixed left-to-right
@@ -869,11 +914,11 @@ reviewer doesn't have to re-derive it:
   which dispatch path ran (see "How the dispatch is verified" above) is read
   in exactly one place in the entire codebase: `tests/test_backend.cpp`. No
   `getenv`/`std::getenv` call exists anywhere under `src/` or `include/` —
-  production dispatch logic (`cpu::has_aes_ni()` in `src/cpu_detect.cpp`,
+  production dispatch logic (`cpu::has_hw_aes()` in `src/cpu_detect.cpp`,
   `active_backend()` in `include/aeslib/backend.hpp`) is driven purely by
-  the CPUID check itself and cannot be steered by that or any other
-  environment variable.
-- `src/internal.hpp` (the `Block`/`aes256_encrypt_block_*`/`cpu::has_aes_ni`/
+  the hardware-capability check itself and cannot be steered by that or any
+  other environment variable.
+- `src/internal.hpp` (the `Block`/`aes256_encrypt_block_*`/`cpu::has_hw_aes`/
   `rng::fill_random`/`ct_sbox`/`validate_block_count` declarations tests need
   to reach internals directly) is included only by production `.cpp` files
   under `src/` — never by anything under `include/aeslib/`. A consumer
@@ -890,16 +935,115 @@ reviewer doesn't have to re-derive it:
   currently packages test code, `internal.hpp`, or anything else for
   distribution.
 
-## Third architecture (not implemented, but why it'd be straightforward)
+## ARM AArch64 Crypto Extensions (bonus 3.2), and the next architecture after that
 
 The dispatch model deliberately isolates *all* architecture-specific code
-behind one interface: two functions with an identical signature
-(`Block aes256_encrypt_block_*(const SecretKey&, const Block&)`) plus a
-one-function CPU-capability check. Adding ARM AArch64 Crypto Extensions
-support (or a third architecture) would mean adding one more
-`aes_core_*.cpp` file implementing that same function signature with the
-target's intrinsics, extending `cpu_detect.cpp`'s capability check for that
-architecture, and adding one more arm to `active_backend()`'s dispatch — no
-changes anywhere else in the library, since `Aes256Ctr` only ever calls
-through the shared function signature and never branches on architecture
-itself.
+behind one interface: functions with an identical signature
+(`Block aesNNN_encrypt_block_*(const SecretKey&, const Block&)`) plus a
+one-function CPU-capability check. This section originally argued that
+adding ARM support would be straightforward given that isolation; it now
+describes what was actually built, plus a third architecture (RISC-V) that
+the same isolation would make similarly straightforward to add next.
+
+**The `_hw` dispatch wrapper.** Before this bonus, `aes256_ctr.cpp`/
+`aes_gcm.cpp` called `detail::aesNNN_encrypt_block_ni(...)` by name whenever
+`active_backend() == Backend::Hardware`. Adding a second hardware backend
+meant there were now two possible "real" implementations that are never both
+real in the same build — rather than sprinkling `#if`s across both mode
+files, `src/aes_core_hw.cpp` is the one new file that owns that choice,
+exposing `aesNNN_encrypt_block_hw()` wrappers implemented purely as
+`#if`/`#elif` on the target architecture (x86 → `_ni`, arm64 → `_arm`, else →
+throws). `aes256_ctr.cpp` and `aes_gcm.cpp` each needed a **one-line**
+change — `_ni` → `_hw` in their local `encrypt_block()` helper — confirming
+the "no changes anywhere else in the library" claim this section originally
+made.
+
+**Runtime detection, per OS.** `cpu::has_hw_aes()` (`src/cpu_detect.cpp`)
+gained three arm64 branches alongside the existing x86 CPUID one, since
+"does this CPU support the AArch64 Crypto Extensions" has no single
+cross-platform answer:
+
+- Linux: `getauxval(AT_HWCAP) & HWCAP_AES`.
+- macOS (Apple Silicon): `sysctlbyname("hw.optional.arm.FEAT_AES", ...)`.
+- Windows on ARM64: `IsProcessorFeaturePresent(PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE)`.
+
+Each is read once and memoized, exactly like the x86 CPUID check. An arm64
+target under an unrecognized OS falls back to `false` (software path) rather
+than guessing — a documented, safe limitation rather than a silent
+correctness risk.
+
+**No key-expansion instruction, unlike AES-NI.** x86's AES-NI has
+`_mm_aeskeygenassist_si128`, a dedicated key-schedule-assist instruction,
+which is why `aes_core_ni.cpp` has its own hand-written schedule routine
+separate from the software backend's. ARM's Crypto Extensions have no
+equivalent — `AESE`/`AESMC` only accelerate the 16-round block *transform*,
+not the schedule — so real-world implementations (mbedTLS's `aesce.c`,
+Botan's `aes_armv8.cpp`) compute the round-key schedule in portable code.
+Rather than writing a third copy of FIPS-197 §5.2, the existing
+`expand_key<Nk,Nr>` template was extracted from `aes_core_soft.cpp`'s
+anonymous namespace into `src/aes_key_schedule.hpp`, a shared internal
+header both `aes_core_soft.cpp` and `aes_core_arm.cpp` now include.
+`aes_core_arm.cpp` calls it, packs each 16-byte round key into a
+`uint8x16_t`, and runs the standard ARMv8 round loop:
+
+```cpp
+state = vld1q_u8(block);
+for (i = 0; i < Nr - 1; ++i) {
+    state = vaeseq_u8(state, rk[i]);   // fused AddRoundKey+SubBytes+ShiftRows
+    state = vaesmcq_u8(state);         // MixColumns
+}
+state = vaeseq_u8(state, rk[Nr - 1]);  // final round: no MixColumns
+state = veorq_u8(state, rk[Nr]);       // final AddRoundKey
+```
+
+`vaeseq_u8(x, k)` computes `ShiftRows(SubBytes(x ^ k))` — AddRoundKey fused
+into the *next* round's SubBytes/ShiftRows rather than applied at the end of
+the previous one. This reproduces standard FIPS-197 encryption because
+SubBytes and ShiftRows commute: ShiftRows only permutes byte *positions*,
+and SubBytes substitutes every byte identically regardless of position, so
+folding round *r*'s trailing AddRoundKey into round *r+1*'s leading
+SubBytes/ShiftRows is equivalent to doing them in the textbook order. The
+round-key schedule is wiped the same volatile-write way every other backend
+wipes its derived key material (see "Minimizing key exposure in memory"),
+both as the `Word` array (`aes_key_schedule.hpp`'s shared `wipe_schedule`)
+and as the packed `uint8x16_t` copy `aes_core_arm.cpp` builds from it.
+
+**Build isolation.** Same rationale as `-maes` for `aes_core_ni.cpp`:
+`aes_core_arm.cpp` is the *only* file compiled with `-march=armv8-a+crypto`
+on GCC/Clang (see `CMakeLists.txt`'s new `AESLIB_TARGET_IS_ARM64` branch), so
+the compiler never emits an AArch64 Crypto Extensions instruction anywhere
+else in the binary. MSVC targeting ARM64 needs no equivalent flag — its
+`<arm_neon.h>` exposes the crypto intrinsics unconditionally when targeting
+ARM64, since Windows' ARM64 baseline always presumes NEON even though the
+crypto extensions themselves remain an optional hardware feature checked at
+runtime via `IsProcessorFeaturePresent` as above.
+
+**Test reuse, not new test code.** `tests/test_aes_core.cpp`'s existing
+hardware-path KAT and cross-check tests (`hardware_matches_fips197_kat_when_available`,
+`backends_agree_on_random_blocks`, and their AES-128 equivalents) called
+`aesNNN_encrypt_block_ni(...)` by name — on an arm64 build that would hit
+`aes_core_ni.cpp`'s throwing stub rather than testing anything real. Changing
+those four tests to call `aesNNN_encrypt_block_hw(...)` instead (the same
+one-line substitution the production code got) makes them exercise whichever
+hardware backend the build actually targets, with zero new arch-specific
+test code. A new `expand_key_matches_fips197_appendix_a3` test checks the
+now-shared schedule template directly against FIPS-197 Appendix A.3's
+published 60-word AES-256 expansion, localizing a schedule bug independent
+of round-transform correctness now that the schedule is shared by two
+backends instead of duplicated once.
+
+**The next architecture: RISC-V.** RISC-V has two relevant AES extension
+families — `Zkne`/`Zknd` (scalar AES encrypt/decrypt round instructions,
+under the `Zkn` umbrella) and `Zvkned` (vector AES, operating on 128-bit
+element groups). Runtime detection on Linux goes through the `riscv_hwprobe()`
+syscall rather than `getauxval(AT_HWCAP)`, since HWCAP only covers the base
+ISA letters, not sub-extensions like these. Adding it would mean exactly the
+three touch points ARM needed: one more `aes_core_riscv.cpp` implementing
+`aesNNN_encrypt_block_riscv()`, one more `#elif` in `aes_core_hw.cpp`, and
+one more branch in `cpu_detect.cpp`'s `has_hw_aes()` — no changes to
+`aes256_ctr.cpp`, `aes_gcm.cpp`, or anything under `include/`. Whether
+RISC-V's scalar AES instructions have a dedicated key-schedule-assist
+instruction (the way AES-NI does, but ARM's Crypto Extensions don't) would
+need checking against the ISA spec before implementation — if not, the same
+shared `aes_key_schedule.hpp` this bonus introduced would serve a third
+backend, not just two.

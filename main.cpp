@@ -16,6 +16,19 @@
 
 namespace {
 
+// Purely a display label for which hardware instruction set active_backend()
+// selected — the dispatch decision itself (Hardware vs. Software) is always
+// made at runtime (see aeslib::active_backend()); this only names *which*
+// hardware backend that runtime decision means on this build's architecture.
+constexpr std::string_view kHardwareBackendName =
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    "Hardware (AES-NI)";
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    "Hardware (ARM Crypto Extensions)";
+#else
+    "Hardware";
+#endif
+
 std::vector<std::byte> make_sample_plaintext() {
     const std::string_view text =
         "The quick brown fox jumps over the lazy dog. AES-256-CTR round-trip "
@@ -35,7 +48,7 @@ int main() {
 
     try {
         std::cout << "Backend in use: "
-                  << (aeslib::active_backend() == aeslib::Backend::Hardware ? "Hardware (AES-NI)" : "Software")
+                  << (aeslib::active_backend() == aeslib::Backend::Hardware ? kHardwareBackendName : "Software")
                   << '\n';
 
         // 1. Load (or generate) a sample plaintext file.

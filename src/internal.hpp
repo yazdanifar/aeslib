@@ -26,11 +26,27 @@ Block aes128_encrypt_block_soft(const SecretKey& key, const Block& block);
 // API.
 std::uint8_t ct_sbox(std::uint8_t x);
 
-// Same operations, implemented with AES-NI intrinsics. Only ever called after
-// cpu::has_aes_ni() has been confirmed true; must not be called otherwise
-// since the process may fault executing an unsupported instruction.
+// Same operations, implemented with AES-NI intrinsics (amd64). Only ever
+// called after cpu::has_hw_aes() has been confirmed true; must not be called
+// otherwise since the process may fault executing an unsupported instruction.
 Block aes256_encrypt_block_ni(const SecretKey& key, const Block& block);
 Block aes128_encrypt_block_ni(const SecretKey& key, const Block& block);
+
+// Same operations, implemented with AArch64 Crypto Extensions intrinsics
+// (AESE/AESMC). Only ever called after cpu::has_hw_aes() has been confirmed
+// true; must not be called otherwise since the process may fault executing
+// an unsupported instruction.
+Block aes256_encrypt_block_arm(const SecretKey& key, const Block& block);
+Block aes128_encrypt_block_arm(const SecretKey& key, const Block& block);
+
+// Hardware-accelerated forward cipher for whichever architecture this binary
+// was built for — AES-NI on amd64, AArch64 Crypto Extensions on arm64 (see
+// aes_core_hw.cpp). The mode logic in aes256_ctr.cpp/aes_gcm.cpp calls only
+// these, never the arch-specific _ni/_arm functions above by name, so
+// dispatch to a new architecture is a one-file change (aes_core_hw.cpp).
+// Only ever called after cpu::has_hw_aes() has been confirmed true.
+Block aes256_encrypt_block_hw(const SecretKey& key, const Block& block);
+Block aes128_encrypt_block_hw(const SecretKey& key, const Block& block);
 
 // GF(2^128) multiplication with the GCM reduction polynomial (NIST SP
 // 800-38D Algorithm 1), branch-free/constant-time w.r.t. both operands.
@@ -92,9 +108,12 @@ private:
 
 namespace aeslib::cpu {
 
-// True if the current CPU advertises AES-NI support (CPUID.1:ECX.AESNI,
-// bit 25). Computed once and memoized; safe to call repeatedly.
-bool has_aes_ni();
+// True if the current CPU advertises a hardware AES acceleration extension:
+// AES-NI (CPUID.1:ECX.AESNI, bit 25) on amd64, or AArch64 Crypto Extensions
+// (HWCAP_AES / hw.optional.arm.FEAT_AES / PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE,
+// depending on OS) on arm64. Computed once and memoized; safe to call
+// repeatedly.
+bool has_hw_aes();
 
 } // namespace aeslib::cpu
 
