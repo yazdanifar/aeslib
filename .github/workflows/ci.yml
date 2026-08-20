@@ -1,0 +1,132 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Native build + full CTest suite on real AES-NI hardware. Also uploads
+  # the test binary as an artifact so the qemu-aes-on/off jobs below can run
+  # the exact same compiled binary under two different emulated CPU models —
+  # making brief 2.2's "same binary, correct on two different machines"
+  # claim literal rather than just built-twice-and-hoped.
+  linux-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Run harness
+        run: ./build/aes_harness
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-binaries
+          path: |
+            build/tests/aeslib_tests
+            build/aes_harness
+
+  # Runs the SAME binary built above under qemu-x86_64 with an emulated CPU
+  # model that advertises AES-NI, and asserts (via AESLIB_EXPECTED_BACKEND,
+  # see tests/test_backend.cpp) that active_backend() reports Hardware.
+  qemu-aes-on:
+    needs: linux-x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64-binaries
+      - name: Install qemu-user-static
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+      - run: chmod +x tests/aeslib_tests aes_harness
+      - name: Run tests under qemu -cpu Westmere (AES-NI present)
+        env:
+          AESLIB_EXPECTED_BACKEND: hardware
+        run: qemu-x86_64-static -cpu Westmere tests/aeslib_tests
+      - name: Run harness under qemu -cpu Westmere
+        run: qemu-x86_64-static -cpu Westmere aes_harness
+
+  # Same binary again, this time under a CPU model with AES-NI masked off —
+  # asserts active_backend() reports Software. Together with qemu-aes-on,
+  # this is brief 2.2's dispatch requirement made testable in CI. Note this
+  # proves detection correctly reports *absence* and that the software path
+  # is correct when selected; QEMU's TCG will generally still execute an
+  # aesenc instruction even with the feature bit masked, so this does not by
+  # itself guarantee a SIGILL if dispatch were broken (see DESIGN.md).
+  qemu-aes-off:
+    needs: linux-x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64-binaries
+      - name: Install qemu-user-static
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+      - run: chmod +x tests/aeslib_tests aes_harness
+      - name: Run tests under qemu -cpu Nehalem (no AES-NI)
+        env:
+          AESLIB_EXPECTED_BACKEND: software
+        run: qemu-x86_64-static -cpu Nehalem tests/aeslib_tests
+      - name: Run harness under qemu -cpu Nehalem
+        run: qemu-x86_64-static -cpu Nehalem aes_harness
+
+  # Cross-compiles for aarch64 and runs the result under qemu-aarch64 — a
+  # genuinely different architecture, not just a different CPU model of the
+  # same one. No ARM Crypto Extensions support is implemented (that's the
+  # bonus-3.2 scope this submission didn't attempt), so this always expects
+  # Software, and exercises the aes256_encrypt_block_ni() stub path (see
+  # aes_core_ni.cpp's #else branch) actually compiling and never being
+  # called.
+  qemu-aarch64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install aarch64 cross toolchain and qemu-user-static
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++-aarch64-linux-gnu qemu-user-static
+      - name: Configure
+        run: cmake -B build-aarch64 -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-linux-gnu.cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      - name: Build
+        run: cmake --build build-aarch64 -j
+      - name: Run tests under qemu-aarch64
+        env:
+          AESLIB_EXPECTED_BACKEND: software
+        run: qemu-aarch64-static -L /usr/aarch64-linux-gnu build-aarch64/tests/aeslib_tests
+      - name: Run harness under qemu-aarch64
+        run: qemu-aarch64-static -L /usr/aarch64-linux-gnu build-aarch64/aes_harness
+
+  linux-sanitizers:
+    runs-on: ubuntu-latest
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build-san -DCMAKE_BUILD_TYPE=Debug -DAESLIB_ENABLE_SANITIZERS=ON
+      - name: Build
+        run: cmake --build build-san -j
+      - name: Test
+        run: ctest --test-dir build-san --output-on-failure
+      - name: Run harness
+        run: ./build-san/aes_harness
+
+  # First real compilation of the MSVC-specific paths (BCryptGenRandom in
+  # src/csprng.cpp, <intrin.h>/__cpuid in src/cpu_detect.cpp) — see brief 2.5.
+  windows-msvc:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Run harness
+        run: build\Release\aes_harness.exe

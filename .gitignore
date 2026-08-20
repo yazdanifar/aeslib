@@ -1,16 +1,19 @@
 # Build directories and artifacts
 build/
+build-*/
 cmake-build-debug/
 cmake-build-release/
 cmake-build-relwithdebinfo/
 cmake-build-minsizerel/
 cmake-build-*/
-*.cmake
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 compile_commands.json
 Makefile
+
+# NOTE: deliberately not a blanket "*.cmake" rule — that would also hide
+# tracked toolchain files under cmake/ (e.g. cmake/aarch64-linux-gnu.cmake).
 
 # Build outputs
 *.o

@@ -45,5 +45,24 @@ if(WIN32)
   target_link_libraries(aeslib PRIVATE bcrypt)
 endif()
 
+# Reviewers are told this will be checked under sanitizers (brief 2.9); one
+# flag opts both the library and the tests in rather than requiring a
+# separate sanitizer build script.
+option(AESLIB_ENABLE_SANITIZERS "Build with -fsanitize=address,undefined" OFF)
+if(AESLIB_ENABLE_SANITIZERS)
+  if(MSVC)
+    message(WARNING "AESLIB_ENABLE_SANITIZERS has no effect with MSVC; use /fsanitize=address instead.")
+  else()
+    target_compile_options(aeslib PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(aeslib PUBLIC -fsanitize=address,undefined)
+  endif()
+endif()
+
 add_executable(aes_harness main.cpp)
 target_link_libraries(aes_harness PRIVATE aeslib)
+
+option(AESLIB_BUILD_TESTS "Build the aeslib_tests suite" ON)
+if(AESLIB_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
