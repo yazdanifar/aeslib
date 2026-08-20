@@ -553,9 +553,26 @@ this submission. Specifically:
   it automatically (walking up from `Python3_EXECUTABLE` to find that
   binary) — so `aeslib.capi_python` genuinely runs under sanitizers on
   *both* Linux and macOS now, rather than being permanently skipped on the
-  latter based on the earlier, incomplete diagnosis. See DESIGN.md's
-  "Foreign-language interface" section for the full account, including why
-  the first conclusion was wrong and what specifically corrected it.
+  latter based on the earlier, incomplete diagnosis. Pushing to trigger
+  this project's own `linux-sanitizers` CI job (Ubuntu, Clang) — the actual
+  target this whole preload mechanism was built for — then surfaced a
+  second, different failure local macOS testing couldn't have shown:
+  `LD_PRELOAD` worked exactly as intended (`demo.py` ran the full round
+  trip and printed `SUCCESS`), but LeakSanitizer flagged ~121 KB across 118
+  allocations as leaked at process exit. Every leak stack trace was
+  checked rather than assumed benign — all of them bottom out in CPython
+  internals (`Py_InitializeFromConfig`, `PyImport_...`, the `_ctypes`
+  module), none in `capi.cpp` or any `aeslib` symbol — and matched a
+  documented CPython/ASan interaction
+  ([python/cpython#135618](https://github.com/python/cpython/issues/135618)):
+  the interpreter deliberately never frees many of its own internal
+  structures at shutdown, which LeakSanitizer is designed to flag as a
+  leak regardless of intent. Fixed with `ASAN_OPTIONS=detect_leaks=0`,
+  scoped to just `aeslib.capi_python`'s `ENVIRONMENT` (not the sanitizer
+  build as a whole, so the `aeslib_tests`/`aes_harness` suites keep full
+  leak detection). See DESIGN.md's "Foreign-language interface" section
+  for the full account of both issues, including why the first macOS
+  conclusion was initially wrong and what specifically corrected it.
 - **Documentation** — this README and DESIGN.md (with updated Scope and feature descriptions).
 
 All code was reviewed and is understood by the author. All backends are

@@ -1158,6 +1158,40 @@ ASan/UBSan through the regular `aeslib_tests`/`aes_harness` runs in that
 build either way, which link it directly rather than loading it via
 `dlopen()`.
 
+**A second issue, only visible on real CI, not local testing.** The local
+verification above was on macOS; pushing to this project's own
+`linux-sanitizers` CI job (Ubuntu, Clang) surfaced a different failure the
+local macOS run couldn't have shown: `LD_PRELOAD` worked exactly as
+designed — no "loaded too late" abort this time, and `demo.py`'s own
+output confirmed the full round trip actually ran and printed `SUCCESS` —
+but the process still exited non-zero, because LeakSanitizer (part of the
+ASan runtime) reported roughly 121 KB across 118 allocations as "leaked" at
+process exit. Every one of those leak stack traces was checked, and every
+one bottoms out in CPython internals — `Py_InitializeFromConfig`,
+`PyImport_ImportModuleLevelObject`, the `_ctypes` extension module — never
+in `capi.cpp` or any `aeslib` symbol. This is a known, documented
+false-positive shape, not something specific to this project:
+[python/cpython#135618](https://github.com/python/cpython/issues/135618)
+reports the identical pattern (ASan flagging leaks during Python
+interpreter shutdown), because CPython deliberately never frees many of
+its own internal structures (interned singletons, module-level caches) on
+exit — correct, intentional behavior for an interpreter that's about to
+hand its whole address space back to the OS anyway, but exactly what
+LeakSanitizer is designed to flag. The fix, confirmed against
+[Clang's own LeakSanitizer docs](https://clang.llvm.org/docs/LeakSanitizer.html)
+and the [google/sanitizers wiki](https://github.com/google/sanitizers/wiki/AddressSanitizerLeakSanitizer),
+is `ASAN_OPTIONS=detect_leaks=0` — added to `aeslib.capi_python`'s
+`ENVIRONMENT` alongside the `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES` entry, on
+both platforms (macOS didn't hit this in practice — LeakSanitizer isn't
+enabled there by default the way it is on Linux — but the same interpreter
+-shutdown allocations exist either way, so the option is set defensively,
+not because a macOS run failed). This disables *leak* detection for this
+one test only; it does not touch ASan's memory-safety checks (use-after-
+free, buffer overflow, etc.) for this test, and it has zero effect on the
+`aeslib_tests`/`aes_harness` runs in the same sanitizer build, which keep
+full leak detection since they never touch the Python interpreter this
+issue is specific to.
+
 This section's design decisions were informed by:
 
 - **[Nibble Stew: "Exposing a C++ library with a stable plain C API"](https://nibblestew.blogspot.com/2016/11/exposing-c-library-with-stable-plain-c.html?m=1)**
@@ -1194,6 +1228,14 @@ This section's design decisions were informed by:
   instead — which this project's `CMakeLists.txt` now applies directly,
   confirmed working against `aeslib_c.dylib` rather than assumed to
   transfer from someone else's setup.
+- **[python/cpython#135618](https://github.com/python/cpython/issues/135618)**,
+  **[Clang's LeakSanitizer documentation](https://clang.llvm.org/docs/LeakSanitizer.html)**,
+  and the **[google/sanitizers AddressSanitizerLeakSanitizer wiki page](https://github.com/google/sanitizers/wiki/AddressSanitizerLeakSanitizer)**:
+  the source confirming the `linux-sanitizers` CI failure this bonus hit —
+  LeakSanitizer flagging CPython's own interpreter-shutdown allocations —
+  was a known false-positive class with a documented fix
+  (`ASAN_OPTIONS=detect_leaks=0`, scoped to just this test), not something
+  specific to this project's code.
 
 ## Randomness
 

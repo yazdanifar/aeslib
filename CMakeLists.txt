@@ -160,7 +160,17 @@ if(AESLIB_BUILD_TESTS)
             OUTPUT_VARIABLE AESLIB_ASAN_RUNTIME OUTPUT_STRIP_TRAILING_WHITESPACE)
         endif()
         if(AESLIB_ASAN_RUNTIME AND EXISTS "${AESLIB_ASAN_RUNTIME}")
-          set(AESLIB_CAPI_PYTHON_PRELOAD_ENV "LD_PRELOAD=${AESLIB_ASAN_RUNTIME}")
+          # detect_leaks=0: LeakSanitizer otherwise flags CPython's own
+          # interpreter-shutdown allocations (interned objects, module
+          # caches deliberately never freed before exit — see
+          # python/cpython#135618, a known false-positive shape unrelated
+          # to this project's code) as leaked. Verified directly: every
+          # "Direct/Indirect leak" frame in a run without this option
+          # traces into Py_InitializeFromConfig/PyImport_.../_ctypes, none
+          # into capi.cpp or aeslib. Scoped to just this one test's
+          # environment, not the whole sanitizer build, so the C++ suites
+          # (aeslib_tests/aes_harness) keep full leak detection.
+          set(AESLIB_CAPI_PYTHON_PRELOAD_ENV "LD_PRELOAD=${AESLIB_ASAN_RUNTIME};ASAN_OPTIONS=detect_leaks=0")
           set(AESLIB_CAPI_PYTHON_TEST_ENABLED TRUE)
         endif()
 
@@ -178,7 +188,12 @@ if(AESLIB_BUILD_TESTS)
         set(AESLIB_PY_UNSHIMMED "${AESLIB_PY_VERSION_DIR}/Resources/Python.app/Contents/MacOS/Python")
         if(AESLIB_ASAN_RUNTIME AND EXISTS "${AESLIB_ASAN_RUNTIME}" AND EXISTS "${AESLIB_PY_UNSHIMMED}")
           set(AESLIB_CAPI_PYTHON_INTERPRETER "${AESLIB_PY_UNSHIMMED}")
-          set(AESLIB_CAPI_PYTHON_PRELOAD_ENV "DYLD_INSERT_LIBRARIES=${AESLIB_ASAN_RUNTIME}")
+          # detect_leaks=0: see the matching comment on the Linux branch
+          # above — same CPython-interpreter-shutdown false positive.
+          # LeakSanitizer isn't enabled by default on macOS the way it is
+          # on Linux, so this is defensive (this project's own macOS run
+          # passed without it), not a fix for an observed failure here.
+          set(AESLIB_CAPI_PYTHON_PRELOAD_ENV "DYLD_INSERT_LIBRARIES=${AESLIB_ASAN_RUNTIME};ASAN_OPTIONS=detect_leaks=0")
           set(AESLIB_CAPI_PYTHON_TEST_ENABLED TRUE)
         endif()
       endif()
