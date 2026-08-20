@@ -118,23 +118,35 @@ verified" section for how this was validated and its limitations.
 
 ## Scope
 
-This submission implements the challenge's core requirements plus three
-Section 3 bonus objectives: the unit-test suite (3.1) described above, key
-generation ergonomics (3.5) — `SecretKey` has no public raw-byte accessor,
-so an external caller has no way to accidentally copy, log, or serialize
+This submission implements the challenge's core requirements plus four
+Section 3 bonus objectives: the unit-test suite (3.1), safer key storage (3.4),
+key generation ergonomics (3.5), and minimizing key exposure in memory (3.6).
+
+**Bonus 3.4 — Safer key storage**: `SecretKey::save_to_file_encrypted(path,
+passphrase, iterations)` and `load_from_file_encrypted(path, passphrase)`
+implement PBKDF2-HMAC-SHA256 key derivation (per RFC 8018, OWASP-recommended
+600,000 iterations) with AES-256-CTR encryption and HMAC-SHA256 authentication
+(encrypt-then-MAC, constant-time tag verification). The wrapped-key file format
+is a fixed 101-byte structure: magic "AESW", version, 128-bit random salt,
+iteration count, fresh nonce, wrapped ciphertext, and HMAC tag. Design verified
+against NIST SP 800-132, age encryption specification, and OpenSSH's bcrypt_pbkdf.
+
+**Bonus 3.5 — Key generation ergonomics**: `SecretKey` has no public raw-byte
+accessor, so an external caller has no way to accidentally copy, log, or serialize
 key bytes; the only sanctioned way to get key material out is the explicit
-`save_to_file()` — and minimizing key exposure in memory (3.6) — `SecretKey`
-locks its backing pages against swap (`mlock`/`VirtualLock`, plus
-`madvise(MADV_DONTDUMP)` on Linux to also exclude them from core dumps) for
-as long as it's alive on top of its existing wipe-on-destruction/move
-behavior; its file I/O goes through raw `read`/`write`/`ReadFile`/`WriteFile`
-rather than iostreams, to avoid an unwiped copy of key bytes sitting in a
-streambuf; and both AES backends now also wipe their derived round-key
-schedule after each block, not just the raw key. See DESIGN.md's "Key
-generation ergonomics" and "Minimizing key exposure in memory" sections for
-the full writeup, sources consulted, and stated threat model (including
-what this does *not* protect against, e.g. cold-boot attacks and a live
-attached debugger). No other Section 3 bonus objectives were attempted.
+`save_to_file()` or `save_to_file_encrypted()`.
+
+**Bonus 3.6 — Minimizing key exposure in memory**: `SecretKey` locks its backing
+pages against swap (`mlock`/`VirtualLock`, plus `madvise(MADV_DONTDUMP)` on Linux
+to exclude from core dumps); file I/O uses raw syscalls to avoid iostream
+streambuf copies; both AES backends wipe derived round-key schedules after each
+block. See DESIGN.md for threat model (protects against offline key theft,
+tampering detection via HMAC, precomputation via random salt; does *not*
+protect against weak passphrases, keyloggers, or live attacker on machine).
+
+Test coverage: Seven suites now include `aeslib.key_storage` (round-trip
+encryption/decryption, wrong-passphrase rejection, file-tampering detection,
+format validation, salt/nonce randomness).
 
 ## AI tool usage disclosure
 
@@ -169,25 +181,26 @@ this submission. Specifically:
   (the SEI CERT C++ Coding Standard's rule against exposing references to
   restricted members, the misuse-resistant-API paper behind NaCl's design,
   and Rust's `secrecy` crate) before implementing, rather than guessing.
-- **Key-exposure hardening (bonus 3.6)** — a further follow-up pass adding
-  `mlock`/`VirtualLock` swap protection to `SecretKey`, and wiping the
-  derived round-key schedule (not just the raw key) in both AES backends
-  after each block. Verified by running the test harness under `ulimit -l
-  0` to confirm the memlock-failure path doesn't break key generation, and
-  by a clean ASan/UBSan run to catch any issue in the new byte-level
-  `volatile` writes over `__m128i` storage. A later research pass — reading
-  how libsodium, OpenSSL, and Bitcoin Core handle the same problem, plus
-  Microsoft's own documentation of `VirtualLock`'s weaker guarantee versus
-  POSIX `mlock`, and the cold-boot-attack literature — surfaced a real gap
-  (`mlock` alone doesn't exclude pages from Linux core dumps) and a real,
-  fixable copy (`std::ofstream`/`std::ifstream`'s internal streambuf when
-  saving/loading key files). Both were fixed: `madvise(MADV_DONTDUMP)` was
-  added alongside `mlock` on Linux, and `save_to_file()`/`load_from_file()`
-  now use raw `read`/`write`/`ReadFile`/`WriteFile` instead of iostreams.
-  DESIGN.md's threat-model paragraph was also expanded to state, rather than
-  omit, the cold-boot/DRAM-remanence attack and the Windows-specific
-  `VirtualLock` caveat.
-- **Documentation** — this README and DESIGN.md.
+- **Key-exposure hardening (bonus 3.6)** — a follow-up pass adding
+  `mlock`/`VirtualLock` swap protection to `SecretKey`, and wiping the derived
+  round-key schedule in both AES backends after each block. A research pass —
+  reading how libsodium, OpenSSL, and Bitcoin Core handle the same problem,
+  plus Microsoft's documentation of `VirtualLock`'s weaker guarantee versus
+  POSIX `mlock`, and the cold-boot-attack literature — surfaced two gaps:
+  `mlock` alone doesn't exclude pages from Linux core dumps, and
+  `std::ofstream`/`std::ifstream` create unwiped streambuf copies. Both were
+  fixed: `madvise(MADV_DONTDUMP)` on Linux and raw syscalls for key I/O.
+- **Safer key storage (bonus 3.4)** — a comprehensive feature, with upfront
+  research against OWASP, NIST SP 800-132, RFC 8018, RFC 2104, FIPS 180-4,
+  FIPS 198-1, age specification, and OpenSSH bcrypt_pbkdf documentation.
+  Implemented from-scratch: SHA-256 per FIPS 180-4, HMAC-SHA256 per RFC 2104,
+  PBKDF2 per RFC 8018 (OWASP-recommended 600,000 iterations), constant-time
+  byte comparison, and secure memory wiper. Encrypted key file uses 101-byte
+  fixed format with magic "AESW", random 128-bit salt, PBKDF2-derived AES
+  and HMAC subkeys, AES-256-CTR-wrapped key, and HMAC-SHA256 tag (verify-before-
+  decrypt). Test coverage: round-trip encryption/decryption, wrong-passphrase
+  rejection, file-tampering detection, format validation, salt/nonce randomness.
+- **Documentation** — this README and DESIGN.md (with updated Scope and feature descriptions).
 
 All code was reviewed and is understood by the author. Both AES-256 backends
 are validated against the official FIPS-197 Appendix C.3 known-answer test
