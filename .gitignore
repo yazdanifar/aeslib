@@ -30,6 +30,17 @@ sample.key
 *.swp
 *~
 
+# LaTeX build artifacts
+*.aux
+*.log
+*.synctex.gz
+*.out
+*.toc
+*.nav
+*.snm
+*.vrb
+Challenge.pdf
+
 # macOS / Windows filesystem noise
 .DS_Store
 Thumbs.db
