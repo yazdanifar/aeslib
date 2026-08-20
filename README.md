@@ -20,6 +20,11 @@ dispatch mechanism, the on-disk container formats, and the nonce strategy.
   `aeslib::AesGcm::decrypt(key, container, aad)` — authenticated AES-GCM
   (AES-128 or AES-256, dispatched on the key's size), with optional
   additional authenticated data.
+- Template overloads of `encrypt` / `decrypt_as<T>` on both `Aes256Ctr` and
+  `AesGcm` — the `std::vector<std::byte>` path above stays the baseline, but
+  any byte-viewable `T` (a contiguous container of trivially copyable
+  elements — `std::vector<uint8_t>`, `std::array<X,N>`, `std::string`, ... —
+  or a single trivially copyable object, e.g. a plain struct) also works.
 - `aeslib::save_container` / `load_container` (CTR) and
   `aeslib::save_gcm_container` / `load_gcm_container` (GCM), plus
   `SecretKey::save_to_file` / `load_from_file` — persist ciphertext and key
@@ -140,11 +145,12 @@ verified" section for how this was validated and its limitations.
 
 ## Scope
 
-This submission implements the challenge's core requirements plus six
+This submission implements the challenge's core requirements plus seven
 Section 3 bonus objectives: the unit-test suite (3.1), additional
 architectures (3.2 — ARM AArch64 Crypto Extensions), safer key storage (3.4),
-key generation ergonomics (3.5), minimizing key exposure in memory (3.6), and
-additional AES modes (AES-128 + AES-GCM).
+key generation ergonomics (3.5), minimizing key exposure in memory (3.6),
+additional AES modes (AES-128 + AES-GCM), and generic support for other
+types via templates.
 
 **Bonus 3.2 — Additional architectures**: `src/aes_core_arm.cpp` adds a
 second hardware backend, AES-256/AES-128 forward-cipher encryption using
@@ -238,6 +244,35 @@ tampered-tag, tampered-AAD, and wrong-key rejection; GCM container format
 edge cases; nonce/tag freshness), plus new AES-128 known-answer tests
 (FIPS-197 Appendix C.1) in `aeslib.aes_core` and key-size/format tests in
 `aeslib.key`.
+
+**Bonus — Generic support for other types via templates**:
+`Aes256Ctr`/`AesGcm` gained template overloads of `encrypt` and a new
+`decrypt_as<T>`, alongside (not replacing) the existing
+`std::vector<std::byte>` baseline. `include/aeslib/byte_view.hpp` defines
+the constraint a type `T` needs to satisfy: either a contiguous container of
+trivially copyable elements (`std::vector<X>`, `std::array<X,N>`,
+`std::string`, ...), viewed element-wise, or a single trivially copyable
+object (e.g. a plain struct), viewed as one `sizeof(T)`-byte blob — expressed
+as C++17 SFINAE traits over `std::is_trivially_copyable`, since this project
+targets C++17 and has neither `std::span` nor concepts available.
+`decrypt_as<T>` throws `FormatError` if the decrypted byte count doesn't fit
+`T` (wrong `sizeof(T)` for an object, or not a whole multiple of the element
+size for a resizable container; a fixed-size `std::array<X,N>` must match
+`N * sizeof(X)` exactly since it can't be resized to fit). See DESIGN.md's
+"Generic support for other types via templates" section for the full
+constraint reasoning, including why `is_trivially_copyable` is necessary but
+not sufficient for "safe to persist."
+
+Test coverage: `aeslib.generic` — round-trip encryption/decryption through
+both `Aes256Ctr` and `AesGcm` for `std::vector<uint8_t>`, `std::array<std::byte,N>`,
+`std::array<uint8_t,N>`, `std::string`, `std::vector<int32_t>`, and a plain
+POD struct; `FormatError` on a byte-count mismatch for a fixed-size array, a
+non-multiple-of-element-size vector, and a wrong-size struct; a sanity check
+that the template `encrypt` path produces ciphertext identical to what the
+untouched `std::vector<std::byte>` baseline path produces for the same
+bytes; plus compile-time `static_assert`s proving the trait rejects
+non-trivially-copyable types (a struct holding a `std::vector` member, a
+`std::vector<std::string>`).
 
 ## AI tool usage disclosure
 
@@ -379,6 +414,24 @@ this submission. Specifically:
   AArch64 Crypto Extensions path, not just the x86 stub) before being
   considered complete. See DESIGN.md's "ARM AArch64 Crypto Extensions"
   section for the full design rationale.
+- **Generic support for other types via templates (bonus)** — upfront web
+  research into C++ generic-programming practice for this project's C++17
+  target: `std::is_trivially_copyable`'s role as the standard's own
+  guarantee that an object's representation can be copied/reinterpreted as
+  bytes (the `TriviallyCopyable` named requirement), and C++20's
+  `std::span::as_bytes`/concepts as the idiom this design approximates with
+  C++17 SFINAE since neither is available here. `include/aeslib/byte_view.hpp`
+  (the trait/conversion header), the template `encrypt`/`decrypt_as<T>`
+  overloads on `Aes256Ctr`/`AesGcm`, and `tests/test_generic.cpp` were
+  written and reviewed by the author, including deciding the
+  container-vs-object trait split (so a container's elements are converted
+  individually rather than the container being treated as one blob) and the
+  resizable-vs-fixed-capacity distinction that determines whether
+  `decrypt_as<T>` resizes its result or requires an exact length match. The
+  "trivially copyable is necessary but not sufficient for safe persistence"
+  caveat (e.g. a trivially copyable struct holding a raw pointer) was
+  identified during design, not left implicit. See DESIGN.md's "Generic
+  support for other types via templates" section for the full rationale.
 - **Documentation** — this README and DESIGN.md (with updated Scope and feature descriptions).
 
 All code was reviewed and is understood by the author. All backends are

@@ -10,6 +10,8 @@ include/aeslib/       public API headers
   key.hpp              SecretKey — RAII key holder
   backend.hpp          Backend enum + active_backend() query
   container.hpp        on-disk ciphertext container + file I/O helpers
+  byte_view.hpp         byte-viewable-type traits for the generic template
+                         encrypt/decrypt_as<T> overloads (bonus)
   exceptions.hpp        IoError / FormatError
 src/                   implementation
   aes256_ctr.cpp        CTR-mode driver: builds counter blocks, dispatches
@@ -871,6 +873,118 @@ This section's design decisions were informed by:
   severity comparison in the "Nonce/IV strategy" section above — real
   HTTPS servers were found reusing GCM nonces in practice, not merely a
   theoretical concern.
+
+## Generic support for other types via templates (bonus)
+
+Before this bonus, `Aes256Ctr::encrypt`/`decrypt` and `AesGcm::encrypt`/
+`decrypt` were fixed to `std::vector<std::byte>` on the plaintext side. That
+signature stays exactly as it was — it's the baseline the challenge asks to
+keep — but both classes now also accept, and can decrypt into, any type
+whose storage can be safely viewed as raw bytes.
+
+**Why C++17 SFINAE, not C++20 concepts.** `CMakeLists.txt` sets
+`CMAKE_CXX_STANDARD 17`, and nothing else in this codebase assumes C++20, so
+this bonus stays on C++17 rather than quietly raising the project's language
+requirement for one feature. That rules out both `std::span` (its
+`as_bytes()`/`as_writable_bytes()` free functions are the standard-library
+version of exactly this "view a contiguous range as bytes" idea) and
+`concept`/`requires`. The equivalent C++17 tool is a set of `std::void_t`
+detection traits plus `std::enable_if_t`, in the new
+`include/aeslib/byte_view.hpp`.
+
+**Two shapes a type can be byte-viewable as.** The brief distinguishes "other
+byte containers (`std::array`, `std::span`, etc.)" from "any type at all, ...
+via its size and a reinterpreted view of its memory" — these are genuinely
+different operations, so `byte_view.hpp` keeps them as two separate traits
+rather than trying to unify them:
+
+1. **Byte-container** (`is_byte_container<T>`): `T` exposes `.data()`,
+   `.size()`, and `T::value_type` (detected via `has_contiguous_storage`,
+   the `std::void_t` idiom), and `T::value_type` is
+   `std::is_trivially_copyable`. Converting to bytes walks the container
+   element-wise: `reinterpret_cast<const std::byte*>(value.data())` for
+   `value.size() * sizeof(value_type)` bytes. This covers
+   `std::vector<std::byte>` (the baseline — it satisfies this trait too, but
+   the exact non-template overload always wins for it, see below),
+   `std::vector<std::uint8_t>`, `std::array<std::byte, N>`, `std::string`,
+   and — since the brief says "any type at all" — containers of any
+   trivially copyable element, not just byte-sized ones:
+   `std::vector<std::int32_t>`, `std::array<float, N>`, etc.
+2. **Byte-object** (`is_byte_object<T>`): `T` is `std::is_trivially_copyable`
+   as a whole, and is *not* itself a byte-container. Converting to bytes
+   reinterprets the single object: `reinterpret_cast<const
+   std::byte*>(std::addressof(value))` for `sizeof(T)` bytes. This is the
+   "any type at all" case for non-container types — a plain struct (e.g. a
+   sensor-reading record) is treated as one opaque blob.
+
+The `!is_byte_container<T>::value` guard on `is_byte_object` matters:
+`std::vector<int32_t>` isn't trivially copyable as a whole (it owns a heap
+buffer), so it only ever satisfies the container trait — but a type like
+`std::array<int, 4>` *is* trivially copyable as a whole, and without the
+guard it would satisfy both traits simultaneously. Making them mutually
+exclusive means every byte-viewable type has exactly one, unambiguous
+conversion path instead of an implementation-detail tiebreak between "4
+ints, converted element-wise" and "16 bytes of one opaque blob" — the two
+happen to produce identical bytes today, but there's no reason a reader
+should have to notice that to trust the behavior is well-defined.
+
+**What `decrypt_as<T>` requires on the way back.** Going from bytes to `T` is
+where a size mismatch becomes observable, so `from_byte_vector<T>` validates
+before reinterpreting rather than reading past the end of a short buffer:
+
+- **Resizable container** (detected via a `.resize(std::size_t)` SFINAE
+  trait — `std::vector`, `std::string`): the decrypted byte count must be a
+  whole multiple of `sizeof(value_type)` (`FormatError` otherwise), and the
+  result is resized to fit exactly.
+- **Fixed-capacity container** (`std::array<X, N>`, or any type without a
+  `resize` member): capacity can't change, so the byte count must equal
+  `N * sizeof(X)` exactly (`FormatError` otherwise).
+- **Byte-object**: the byte count must equal `sizeof(T)` exactly
+  (`FormatError` otherwise).
+
+`decrypt_as<T>` is a new name, not an overload of the existing `decrypt`,
+because the return type can't be deduced from the call's arguments the way
+the parameter type drives overload resolution for `encrypt` — a caller has
+to write `decrypt_as<T>(key, container)` to say which `T` they want.
+
+**Why `std::is_trivially_copyable` is necessary but not sufficient.** The
+trait only encodes what the *language* guarantees: that copying an object's
+representation byte-for-byte and copying the object itself have the same
+observable effect (the `TriviallyCopyable` named requirement). It says
+nothing about whether those bytes mean anything outside the process that
+produced them. A struct holding a raw pointer, or a `std::variant` whose
+active member happens to be pointer-shaped, can be trivially copyable and
+still produce bytes that are meaningless — or worse, that alias unrelated
+memory — once written to a file and read back in a different process or a
+later run. C++17 has no reflection to inspect a type's members and reject
+"trivially copyable but semantically unsafe" cases automatically, so this is
+a documented caller responsibility: `byte_view.hpp`'s constraint is a
+necessary safety net (it does rule out non-trivially-copyable types like
+`std::string`-holding structs, `std::vector`-holding structs, and anything
+with a user-defined copy constructor or virtual functions), not a proof that
+any given `T` is *meaningful* to persist. In practice this means: prefer
+plain-old-data structs of fixed-width integers, floats, and byte arrays —
+the same category of type this trait was designed around — and avoid
+pointers, references, or handles inside a type passed to `encrypt`/
+`decrypt_as`.
+
+**Overload resolution and the baseline path.** The template `encrypt`
+overload is constrained with `!std::is_same_v<T, std::vector<std::byte>>` on
+top of `is_byte_viewable_v<T>`, so it's explicitly excluded from ever
+matching the baseline type — even though the standard's tie-breaking rule
+(a non-template function is preferred over an equally-good template
+function match) would already send `std::vector<std::byte>` calls to the
+original overload. The extra exclusion is redundant with that rule but
+documents the intent directly at the call site rather than relying on a
+reader knowing the tie-breaking rule.
+
+**Scope.** This extends `Aes256Ctr::encrypt`/`decrypt_as` and
+`AesGcm::encrypt`/`decrypt_as` — the plaintext side. `AesGcm`'s `aad`
+parameter stays `std::vector<std::byte>`; templating it too would double
+the number of type parameters for a secondary, usually-empty parameter, for
+little practical benefit. `Container`/`GcmContainer` serialization and
+`read_file`/`write_file` are unaffected — those already operate on bytes,
+not on a type a caller would want genericized.
 
 ## Randomness
 

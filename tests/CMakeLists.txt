@@ -8,6 +8,7 @@ add_executable(aeslib_tests
   test_backend.cpp
   test_reference_vectors.cpp
   test_gcm.cpp
+  test_generic.cpp
 )
 
 target_link_libraries(aeslib_tests PRIVATE aeslib)
@@ -25,6 +26,6 @@ endif()
 # One add_test() per suite, all against the same binary (see test_main.cpp's
 # suite-name filtering) — this is what lets CTest report each suite
 # separately while keeping a single zero-dependency test executable.
-foreach(suite aes_core ctr container key key_storage backend reference_vectors gcm)
+foreach(suite aes_core ctr container key key_storage backend reference_vectors gcm generic)
   add_test(NAME aeslib.${suite} COMMAND aeslib_tests ${suite})
 endforeach()

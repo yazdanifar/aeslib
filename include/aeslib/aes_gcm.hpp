@@ -4,8 +4,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <type_traits>
 #include <vector>
 
+#include "aeslib/byte_view.hpp"
 #include "aeslib/key.hpp"
 
 namespace aeslib {
@@ -45,6 +47,19 @@ public:
     static GcmContainer encrypt(const SecretKey& key, const std::vector<std::byte>& plaintext,
                                  const std::vector<std::byte>& aad = {});
 
+    // Bonus: generic support for other types via templates (see
+    // byte_view.hpp and DESIGN.md). Same idea as Aes256Ctr's template
+    // encrypt(): accepts any byte-viewable T for the plaintext. `aad`
+    // deliberately stays std::vector<std::byte> — it's a secondary
+    // parameter, not the plaintext this bonus is about.
+    template <typename T, typename = std::enable_if_t<
+                               detail::is_byte_viewable_v<T> &&
+                               !std::is_same_v<T, std::vector<std::byte>>>>
+    static GcmContainer encrypt(const SecretKey& key, const T& plaintext,
+                                 const std::vector<std::byte>& aad = {}) {
+        return encrypt(key, detail::to_byte_vector(plaintext), aad);
+    }
+
     // Decrypts a container previously produced by encrypt() under `key`,
     // verifying the authentication tag against the same `aad` before
     // decrypting. Throws AuthenticationError if the tag doesn't verify
@@ -52,6 +67,17 @@ public:
     // never decrypted before authentication succeeds.
     static std::vector<std::byte> decrypt(const SecretKey& key, const GcmContainer& container,
                                            const std::vector<std::byte>& aad = {});
+
+    // Bonus: generic support for other types via templates. Decrypts and
+    // authenticates, then reinterprets the plaintext bytes as T (see
+    // byte_view.hpp). Call as decrypt_as<T>(key, container[, aad]); throws
+    // AuthenticationError first (same as decrypt()), then FormatError if the
+    // authenticated byte count doesn't match what T requires.
+    template <typename T, typename = std::enable_if_t<detail::is_byte_viewable_v<T>>>
+    static T decrypt_as(const SecretKey& key, const GcmContainer& container,
+                         const std::vector<std::byte>& aad = {}) {
+        return detail::from_byte_vector<T>(decrypt(key, container, aad));
+    }
 };
 
 // Serializes a GcmContainer to bytes using the wire format documented above.
