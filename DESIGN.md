@@ -268,15 +268,25 @@ than relying on documentation to warn them off:
   way to get key material out of a `SecretKey` is the explicit,
   deliberately-named `save_to_file()`.
 
-This last point follows guidance from multiple independent sources: the SEI
-CERT C++ Coding Standard's rule against returning references to a member no
-less accessible than the member is meant to be, and the design principle
-behind NaCl's API (identified as the least misuse-prone cryptographic
-library in a comparative study) that raw key bytes shouldn't be accepted or
-returned by anything except the code that constructs/consumes the key type
-itself. Rust's `secrecy` crate (`Secret<T>`/`ExposeSecret`) applies the same
-idea in a different language: one explicit, narrow, auditable access path
-instead of an ordinary public getter every caller can reach.
+This last point follows guidance from multiple independent sources:
+
+- **[SEI CERT C++ Coding Standard](https://cmu-sei.github.io/secure-coding-standards/sei-cert-cpp-coding-standard/)**:
+  Rule against returning references to a member less accessible than the
+  member is meant to be — the public `bytes()` getter was exactly that
+  anti-pattern.
+- **["Designing the API for a cryptographic library: A misuse-resistant
+  application programming interface"](https://www.researchgate.net/publication/262426179_Designing_the_API_for_a_cryptographic_library_A_misuse-resistant_application_programming_interface)**:
+  The design principle behind NaCl's API (identified as the least
+  misuse-prone cryptographic library in a comparative study across languages):
+  raw key bytes shouldn't be accepted or returned by anything except the code
+  that constructs/consumes the key type itself.
+- **[Rust's `secrecy` crate](https://docs.rs/secrecy)**: `Secret<T>`/`ExposeSecret`
+  trait applies the same idea in a different language — one explicit, narrow,
+  auditable access path instead of an ordinary public getter every caller can
+  reach.
+
+All three independently converge on the same fix: kill the public raw-bytes
+accessor.
 
 ### Minimizing key exposure in memory (bonus 3.6)
 
