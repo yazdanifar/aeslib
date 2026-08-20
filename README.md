@@ -1,21 +1,26 @@
 # aeslib
 
-A small C++17 library implementing AES-256-CTR encryption/decryption with
-runtime dispatch between an AES-NI hardware path and a portable software
-fallback, plus a minimal versioned container format for storing encrypted
-data separately from its key.
+A small C++17 library implementing AES-256-CTR and AES-GCM (AES-128 or
+AES-256) encryption/decryption with runtime dispatch between an AES-NI
+hardware path and a portable software fallback, plus a minimal versioned
+container format for storing encrypted data separately from its key.
 
 See [DESIGN.md](DESIGN.md) for the architecture, the hardware/software
-dispatch mechanism, the on-disk container format, and the nonce strategy.
+dispatch mechanism, the on-disk container formats, and the nonce strategy.
 
 ## What it does
 
-- `aeslib::SecretKey::generate()` — generates a 256-bit key via the OS
-  CSPRNG.
+- `aeslib::SecretKey::generate()` / `generate(KeySize::Aes128)` — generates
+  a 256-bit (default) or 128-bit key via the OS CSPRNG.
 - `aeslib::Aes256Ctr::encrypt(key, plaintext)` /
-  `aeslib::Aes256Ctr::decrypt(key, container)` — operate on
-  `std::vector<std::byte>`.
-- `aeslib::save_container` / `load_container` and
+  `aeslib::Aes256Ctr::decrypt(key, container)` — unauthenticated AES-256-CTR,
+  operating on `std::vector<std::byte>`.
+- `aeslib::AesGcm::encrypt(key, plaintext, aad)` /
+  `aeslib::AesGcm::decrypt(key, container, aad)` — authenticated AES-GCM
+  (AES-128 or AES-256, dispatched on the key's size), with optional
+  additional authenticated data.
+- `aeslib::save_container` / `load_container` (CTR) and
+  `aeslib::save_gcm_container` / `load_gcm_container` (GCM), plus
   `SecretKey::save_to_file` / `load_from_file` — persist ciphertext and key
   to **separate** files.
 - `aeslib::active_backend()` — reports whether the hardware (AES-NI) or
@@ -78,26 +83,32 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-Seven suites are registered (`aeslib.aes_core`, `aeslib.ctr`,
+Eight suites are registered (`aeslib.aes_core`, `aeslib.ctr`,
 `aeslib.container`, `aeslib.key`, `aeslib.key_storage`, `aeslib.backend`,
-`aeslib.reference_vectors`), covering: four independent AES-256 known-answer
-tests (FIPS-197 Appendix C.3, NIST SP 800-38A F.1.5, and two NIST CAVP
-all-zero/all-ones edge cases) against both backends, an exhaustive check of
-the software backend's constant-time S-box against the canonical 256-entry
-table (see DESIGN.md's "Constant-time software S-box"), CTR round-trips at a
-range of sizes (including partial-final-block cases), correct counter
-increment across multiple blocks, a boundary test for the 32-bit
-block-counter guard, CTR's expected bit-flip malleability, nonce freshness,
-container/key file format edge cases (bad magic, unsupported version,
-truncated/mismatched-length data), known-answer tests for the from-scratch
-SHA-256 (FIPS 180-4), HMAC-SHA256 (RFC 4231), and PBKDF2-HMAC-SHA256
-(RFC 7914) primitives plus passphrase-protected key file round-trip,
-wrong-passphrase, tamper-detection, and iteration-count-validation tests
-(see DESIGN.md's "Safer key storage (bonus 3.4)"), a CI hook for asserting which dispatch path is
-active (see `tests/test_backend.cpp` and the CI workflow below), and seven
-AES-256-CTR ciphertexts cross-checked against an independent implementation
-(Python's `cryptography` library, itself cross-verified against the
-`openssl` CLI — see `tests/test_reference_vectors.cpp`). Disable with
+`aeslib.reference_vectors`, `aeslib.gcm`), covering: independent AES-256 and
+AES-128 known-answer tests (FIPS-197 Appendix C.3/C.1, NIST SP 800-38A
+F.1.5, and two NIST CAVP all-zero/all-ones edge cases) against both
+backends, an exhaustive check of the software backend's constant-time S-box
+against the canonical 256-entry table (see DESIGN.md's "Constant-time
+software S-box"), CTR round-trips at a range of sizes (including
+partial-final-block cases), correct counter increment across multiple
+blocks, a boundary test for the 32-bit block-counter guard, CTR's expected
+bit-flip malleability, nonce freshness, container/key file format edge
+cases (bad magic, unsupported version, truncated/mismatched-length data),
+known-answer tests for the from-scratch SHA-256 (FIPS 180-4), HMAC-SHA256
+(RFC 4231), and PBKDF2-HMAC-SHA256 (RFC 7914) primitives plus
+passphrase-protected key file round-trip, wrong-passphrase, tamper-detection,
+and iteration-count-validation tests (see DESIGN.md's "Safer key storage
+(bonus 3.4)"), a CI hook for asserting which dispatch path is active (see
+`tests/test_backend.cpp` and the CI workflow below), seven AES-256-CTR
+ciphertexts cross-checked against an independent implementation (Python's
+`cryptography` library, itself cross-verified against the `openssl` CLI —
+see `tests/test_reference_vectors.cpp`), and — the new AES-128/AES-GCM bonus —
+GHASH known-answer tests, AES-128-GCM and AES-256-GCM known-answer tests
+cross-checked against two independent implementations (Python's
+`cryptography` and `pycryptodome`), round-trip/tamper-detection/wrong-key
+tests, GCM container format edge cases, and nonce/tag freshness checks (see
+`tests/test_gcm.cpp` and DESIGN.md's "Additional AES modes"). Disable with
 `-DAESLIB_BUILD_TESTS=OFF` if you only want the library and harness.
 
 For a sanitizer build (brief 2.9 — "we will look at this with sanitizers"):
@@ -122,9 +133,10 @@ verified" section for how this was validated and its limitations.
 
 ## Scope
 
-This submission implements the challenge's core requirements plus four
+This submission implements the challenge's core requirements plus five
 Section 3 bonus objectives: the unit-test suite (3.1), safer key storage (3.4),
-key generation ergonomics (3.5), and minimizing key exposure in memory (3.6).
+key generation ergonomics (3.5), minimizing key exposure in memory (3.6), and
+additional AES modes (AES-128 + AES-GCM).
 
 **Bonus 3.4 — Safer key storage**: `SecretKey::save_to_file_encrypted(path,
 passphrase, iterations)` and `load_from_file_encrypted(path, passphrase)`
@@ -148,11 +160,44 @@ block. See DESIGN.md for threat model (protects against offline key theft,
 tampering detection via HMAC, precomputation via random salt; does *not*
 protect against weak passphrases, keyloggers, or live attacker on machine).
 
-Test coverage: Seven suites now include `aeslib.key_storage` (known-answer
-tests for SHA-256/HMAC-SHA256/PBKDF2-HMAC-SHA256 against FIPS 180-4/RFC
-4231/RFC 7914 reference vectors, round-trip encryption/decryption,
-wrong-passphrase rejection, file-tampering detection, format validation,
-salt/nonce randomness).
+Test coverage: `aeslib.key_storage` (known-answer tests for
+SHA-256/HMAC-SHA256/PBKDF2-HMAC-SHA256 against FIPS 180-4/RFC 4231/RFC 7914
+reference vectors, round-trip encryption/decryption, wrong-passphrase
+rejection, file-tampering detection, format validation, salt/nonce
+randomness).
+
+**Bonus — Additional AES modes**: `aeslib::SecretKey::generate(KeySize::Aes128)`
+adds 128-bit key support alongside the existing 256-bit default, and
+`aeslib::AesGcm::encrypt(key, plaintext, aad)` /
+`AesGcm::decrypt(key, container, aad)` implement AES-GCM (NIST SP 800-38D),
+an authenticated mode, for either key size. The software AES backend
+(`src/aes_core_soft.cpp`) was refactored from an AES-256-only implementation
+into a `template <int Nk, int Nr>` shared by both key sizes; the AES-NI
+backend gets a separate, independently-implemented AES-128 key-expansion
+routine (`expand_key128_ni`, following Intel's published AES-NI key-schedule
+pattern) alongside the existing AES-256 one, since the two schedules'
+structures differ enough that sharing code wasn't a good fit. GHASH
+(`src/ghash.cpp`) is implemented from spec (GF(2^128) multiplication,
+branch-free/constant-time in both operands) and has its own known-answer
+tests independent of the full AES-GCM round trip. CBC mode was deliberately
+not implemented — GCM only needs the forward AES cipher, which both
+backends already have; CBC decryption would require implementing the AES
+inverse cipher (`InvSubBytes` etc.) in both backends for a weaker security
+property (no authentication) than GCM already provides. `Aes256Ctr` and
+`SecretKey::save_to_file_encrypted`/`load_from_file_encrypted` (bonus 3.4)
+remain AES-256-only; the latter now explicitly throws `LimitError` for an
+AES-128 key rather than silently mishandling one. See DESIGN.md's
+"Additional AES modes" section for the full design rationale, including why
+GCM nonce reuse is a strictly worse failure mode than CTR's.
+
+Test coverage: `aeslib.gcm` (GHASH known-answer tests; AES-128-GCM and
+AES-256-GCM known-answer tests cross-checked against two independent
+implementations — Python's `cryptography` library and `pycryptodome`;
+round-trip encryption/decryption with and without AAD; tampered-ciphertext,
+tampered-tag, tampered-AAD, and wrong-key rejection; GCM container format
+edge cases; nonce/tag freshness), plus new AES-128 known-answer tests
+(FIPS-197 Appendix C.1) in `aeslib.aes_core` and key-size/format tests in
+`aeslib.key`.
 
 ## AI tool usage disclosure
 
@@ -248,10 +293,34 @@ this submission. Specifically:
   enforce NIST SP 800-132's PBKDF2 floor (`kMinPbkdf2Iterations` = 1000)
   instead of only a nonzero check. See DESIGN.md's "Safer key storage
   (bonus 3.4)" for detail.
+- **Additional AES modes (AES-128 + AES-GCM)** — upfront web research
+  against NIST SP 800-38D (the GCM specification), Intel's "Advanced
+  Encryption Standard Instructions (AES-NI)" white paper (Gueron, for the
+  AES-128 key-schedule pattern), and the GCM nonce-reuse literature (Joux's
+  "forbidden attack" and the 2016 "Nonce-Disrespecting Adversaries" survey)
+  before implementing, informing the scope decision to implement GCM
+  instead of CBC (documented in DESIGN.md) and the explicit nonce-reuse
+  caveat added to the design doc's "Nonce/IV strategy" section. Implemented
+  from scratch: the software AES backend's `expand_key`/block-encrypt
+  functions were refactored into a `template <int Nk, int Nr>` shared by
+  AES-128 and AES-256 (verified behaviorally identical for AES-256 by the
+  pre-existing FIPS-197 C.3 KAT continuing to pass unchanged); the AES-NI
+  backend's AES-128 key expansion was written as a new, independent
+  function rather than adapted from the existing AES-256 one, since the two
+  schedules' structures differ; and GHASH (GF(2^128) multiplication and the
+  GHASH recursion) was implemented directly against NIST SP 800-38D,
+  written branch-free for the same constant-time reasons as the existing
+  S-box. GCM known-answer test vectors were generated with Python's
+  `cryptography` library and then independently cross-checked against a
+  second, unrelated library (`pycryptodome`) before being hardcoded as
+  expected values — the GHASH-specific KATs were additionally verified
+  against a from-scratch Python re-implementation of GF(2^128)
+  multiplication, independent of both. See DESIGN.md's "Additional AES
+  modes" section for the full design rationale and scope limitations.
 - **Documentation** — this README and DESIGN.md (with updated Scope and feature descriptions).
 
-All code was reviewed and is understood by the author. Both AES-256 backends
-are validated against the official FIPS-197 Appendix C.3 known-answer test
-on every CI run, and the documented limitations of the QEMU-based dispatch
-verification (see DESIGN.md) reflect deliberate scoping decisions rather
-than unexamined output.
+All code was reviewed and is understood by the author. Both backends are
+validated against the official FIPS-197 Appendix C.3 (AES-256) and Appendix
+C.1 (AES-128) known-answer tests on every CI run, and the documented
+limitations of the QEMU-based dispatch verification (see DESIGN.md) reflect
+deliberate scoping decisions rather than unexamined output.

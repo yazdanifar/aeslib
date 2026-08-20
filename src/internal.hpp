@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "aeslib/key.hpp"
 
@@ -14,9 +15,10 @@ namespace aeslib::detail {
 inline constexpr std::size_t kBlockSizeBytes = 16;
 using Block = std::array<std::byte, kBlockSizeBytes>;
 
-// Software AES-256 forward cipher (encryption direction only — CTR mode
-// never needs AES decryption, see aes256_ctr.hpp). Pure, portable C++.
+// Software AES forward cipher (encryption direction only — CTR/GCM never
+// need AES decryption, see aes256_ctr.hpp/aes_gcm.hpp). Pure, portable C++.
 Block aes256_encrypt_block_soft(const SecretKey& key, const Block& block);
+Block aes128_encrypt_block_soft(const SecretKey& key, const Block& block);
 
 // The software backend's constant-time GF(2^8)-inversion S-box (see
 // src/aes_core_soft.cpp). Exposed here purely so tests can check it against
@@ -24,10 +26,20 @@ Block aes256_encrypt_block_soft(const SecretKey& key, const Block& block);
 // API.
 std::uint8_t ct_sbox(std::uint8_t x);
 
-// Same operation, implemented with AES-NI intrinsics. Only ever called after
+// Same operations, implemented with AES-NI intrinsics. Only ever called after
 // cpu::has_aes_ni() has been confirmed true; must not be called otherwise
 // since the process may fault executing an unsupported instruction.
 Block aes256_encrypt_block_ni(const SecretKey& key, const Block& block);
+Block aes128_encrypt_block_ni(const SecretKey& key, const Block& block);
+
+// GF(2^128) multiplication with the GCM reduction polynomial (NIST SP
+// 800-38D Algorithm 1), branch-free/constant-time w.r.t. both operands.
+Block gf128_mul(const Block& x, const Block& y);
+
+// The GHASH function (NIST SP 800-38D §6.4): folds zero-padded 16-byte
+// blocks of AAD then ciphertext into an accumulator via gf128_mul, then
+// multiplies in the big-endian bit-length "length block".
+Block ghash(const Block& h, const std::vector<std::byte>& aad, const std::vector<std::byte>& ciphertext);
 
 // Throws LimitError if `plaintext_len` needs more 16-byte blocks than the
 // CTR construction's 32-bit counter can address (see make_counter_block in

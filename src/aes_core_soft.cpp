@@ -3,25 +3,26 @@
 
 #include "internal.hpp"
 
-// Portable, from-scratch AES-256 forward cipher (FIPS-197), used when the
-// CPU has no AES-NI. CTR mode only ever needs AES *encryption* — decryption
-// (InvSubBytes/InvMixColumns/etc.) is never used, since CTR produces its
-// keystream by encrypting counter blocks regardless of whether the caller is
-// encrypting or decrypting the message itself.
+// Portable, from-scratch AES forward cipher (FIPS-197), used when the CPU
+// has no AES-NI. CTR/GCM only ever need AES *encryption* — decryption
+// (InvSubBytes/InvMixColumns/etc.) is never used, since both modes produce
+// their keystream by encrypting counter blocks regardless of whether the
+// caller is encrypting or decrypting the message itself.
+//
+// Parameterized by (Nk, Nr) so the same code serves both AES-256 (Nk=8,
+// Nr=14) and AES-128 (Nk=4, Nr=10) — see aes_encrypt_block_soft below.
 
 namespace aeslib::detail {
 
 namespace {
 
-// Round constants for the Nk=8 key schedule (indices 1..7 are used).
-constexpr std::array<std::uint8_t, 8> kRcon = {
-    0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40,
+// Round constants (FIPS-197 5.2), indices 0..10. The AES-256 schedule (Nk=8)
+// only ever reads indices 1..7; AES-128 (Nk=4) reads indices 1..10.
+constexpr std::array<std::uint8_t, 11> kRcon = {
+    0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36,
 };
 
-constexpr int kNb = 4;   // words per state block
-constexpr int kNk = 8;   // words per AES-256 key
-constexpr int kNr = 14;  // AES-256 rounds
-constexpr int kScheduleWords = kNb * (kNr + 1);
+constexpr int kNb = 4; // words per state block
 
 using Word = std::array<std::uint8_t, 4>;
 
@@ -91,38 +92,43 @@ Word xor_word(Word a, Word b) {
                 static_cast<std::uint8_t>(a[2] ^ b[2]), static_cast<std::uint8_t>(a[3] ^ b[3])};
 }
 
-// Expands a 256-bit key into the 60-word round-key schedule (FIPS-197 5.2,
-// specialized for Nk=8).
-std::array<Word, kScheduleWords> expand_key(const SecretKey& key) {
+// Expands an Nk*32-bit key into the 4*(Nr+1)-word round-key schedule
+// (FIPS-197 5.2). The "extra SubWord step for Nk>6" branch (i % Nk == 4) is
+// written generically and is naturally dead for Nk=4 (i%4 never equals 4),
+// so AES-128's simpler schedule falls out automatically with no separate
+// code path.
+template <int Nk, int Nr>
+std::array<Word, kNb*(Nr + 1)> expand_key(const SecretKey& key) {
+    constexpr int kScheduleWords = kNb * (Nr + 1);
     std::array<Word, kScheduleWords> schedule{};
     const auto& kb = key_bytes(key);
 
-    for (int i = 0; i < kNk; ++i) {
-        schedule[i] = Word{static_cast<std::uint8_t>(kb[4 * i]),
-                            static_cast<std::uint8_t>(kb[4 * i + 1]),
-                            static_cast<std::uint8_t>(kb[4 * i + 2]),
-                            static_cast<std::uint8_t>(kb[4 * i + 3])};
+    for (int i = 0; i < Nk; ++i) {
+        schedule[static_cast<std::size_t>(i)] = Word{static_cast<std::uint8_t>(kb[4 * i]),
+                                                       static_cast<std::uint8_t>(kb[4 * i + 1]),
+                                                       static_cast<std::uint8_t>(kb[4 * i + 2]),
+                                                       static_cast<std::uint8_t>(kb[4 * i + 3])};
     }
 
-    for (int i = kNk; i < kScheduleWords; ++i) {
-        Word temp = schedule[i - 1];
-        if (i % kNk == 0) {
-            temp = xor_word(sub_word(rot_word(temp)), Word{kRcon[i / kNk], 0, 0, 0});
-        } else if (i % kNk == 4) {
+    for (int i = Nk; i < kScheduleWords; ++i) {
+        Word temp = schedule[static_cast<std::size_t>(i - 1)];
+        if (i % Nk == 0) {
+            temp = xor_word(sub_word(rot_word(temp)), Word{kRcon[static_cast<std::size_t>(i / Nk)], 0, 0, 0});
+        } else if (Nk > 6 && i % Nk == 4) {
             // Extra SubWord step required for Nk=8 (FIPS-197 5.2, Nk > 6 case).
             temp = sub_word(temp);
         }
-        schedule[i] = xor_word(schedule[i - kNk], temp);
+        schedule[static_cast<std::size_t>(i)] = xor_word(schedule[static_cast<std::size_t>(i - Nk)], temp);
     }
     return schedule;
 }
 
-void add_round_key(std::array<std::uint8_t, 16>& state, const std::array<Word, kScheduleWords>& schedule,
-                    int round) {
+template <int Nr>
+void add_round_key(std::array<std::uint8_t, 16>& state, const std::array<Word, kNb*(Nr + 1)>& schedule, int round) {
     for (int c = 0; c < kNb; ++c) {
-        const Word& w = schedule[round * kNb + c];
+        const Word& w = schedule[static_cast<std::size_t>(round * kNb + c)];
         for (int r = 0; r < 4; ++r) {
-            state[c * 4 + r] ^= w[r];
+            state[static_cast<std::size_t>(c * 4 + r)] ^= w[static_cast<std::size_t>(r)];
         }
     }
 }
@@ -136,55 +142,62 @@ void shift_rows(std::array<std::uint8_t, 16>& state) {
     std::array<std::uint8_t, 16> s = state;
     for (int row = 1; row < 4; ++row) {
         for (int col = 0; col < 4; ++col) {
-            state[col * 4 + row] = s[((col + row) % 4) * 4 + row];
+            state[static_cast<std::size_t>(col * 4 + row)] = s[static_cast<std::size_t>(((col + row) % 4) * 4 + row)];
         }
     }
 }
 
 // The round-key schedule is a direct, reversible function of the raw key —
-// just as sensitive as the key itself, and recomputed on every block (CTR
-// calls this once per 16 bytes of keystream), so it's wiped the same way
+// just as sensitive as the key itself, and recomputed on every block (CTR/GCM
+// call this once per 16 bytes of keystream), so it's wiped the same way
 // SecretKey::wipe() wipes the key: a volatile byte-level loop so the
 // compiler can't drop it as a dead store right before the array goes out of
 // scope.
-void wipe_schedule(std::array<Word, kScheduleWords>& schedule) noexcept {
+template <int Nr>
+void wipe_schedule(std::array<Word, kNb*(Nr + 1)>& schedule) noexcept {
     auto* bytes = reinterpret_cast<volatile std::uint8_t*>(schedule.data());
-    for (std::size_t i = 0; i < sizeof(Word) * kScheduleWords; ++i) bytes[i] = 0;
+    for (std::size_t i = 0; i < sizeof(Word) * schedule.size(); ++i) bytes[i] = 0;
 }
 
 void mix_columns(std::array<std::uint8_t, 16>& state) {
     for (int c = 0; c < 4; ++c) {
-        std::uint8_t a0 = state[c * 4 + 0], a1 = state[c * 4 + 1], a2 = state[c * 4 + 2], a3 = state[c * 4 + 3];
-        state[c * 4 + 0] = static_cast<std::uint8_t>(gmul(a0, 2) ^ gmul(a1, 3) ^ a2 ^ a3);
-        state[c * 4 + 1] = static_cast<std::uint8_t>(a0 ^ gmul(a1, 2) ^ gmul(a2, 3) ^ a3);
-        state[c * 4 + 2] = static_cast<std::uint8_t>(a0 ^ a1 ^ gmul(a2, 2) ^ gmul(a3, 3));
-        state[c * 4 + 3] = static_cast<std::uint8_t>(gmul(a0, 3) ^ a1 ^ a2 ^ gmul(a3, 2));
+        std::uint8_t a0 = state[static_cast<std::size_t>(c * 4 + 0)], a1 = state[static_cast<std::size_t>(c * 4 + 1)],
+                      a2 = state[static_cast<std::size_t>(c * 4 + 2)], a3 = state[static_cast<std::size_t>(c * 4 + 3)];
+        state[static_cast<std::size_t>(c * 4 + 0)] = static_cast<std::uint8_t>(gmul(a0, 2) ^ gmul(a1, 3) ^ a2 ^ a3);
+        state[static_cast<std::size_t>(c * 4 + 1)] = static_cast<std::uint8_t>(a0 ^ gmul(a1, 2) ^ gmul(a2, 3) ^ a3);
+        state[static_cast<std::size_t>(c * 4 + 2)] = static_cast<std::uint8_t>(a0 ^ a1 ^ gmul(a2, 2) ^ gmul(a3, 3));
+        state[static_cast<std::size_t>(c * 4 + 3)] = static_cast<std::uint8_t>(gmul(a0, 3) ^ a1 ^ a2 ^ gmul(a3, 2));
     }
+}
+
+template <int Nk, int Nr>
+Block aes_encrypt_block_soft(const SecretKey& key, const Block& block) {
+    auto schedule = expand_key<Nk, Nr>(key);
+
+    std::array<std::uint8_t, 16> state{};
+    for (int i = 0; i < 16; ++i) state[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(block[static_cast<std::size_t>(i)]);
+
+    add_round_key<Nr>(state, schedule, 0);
+    for (int round = 1; round < Nr; ++round) {
+        sub_bytes(state);
+        shift_rows(state);
+        mix_columns(state);
+        add_round_key<Nr>(state, schedule, round);
+    }
+    sub_bytes(state);
+    shift_rows(state);
+    add_round_key<Nr>(state, schedule, Nr);
+    wipe_schedule<Nr>(schedule);
+
+    Block out{};
+    for (int i = 0; i < 16; ++i) out[static_cast<std::size_t>(i)] = static_cast<std::byte>(state[static_cast<std::size_t>(i)]);
+    return out;
 }
 
 } // namespace
 
-Block aes256_encrypt_block_soft(const SecretKey& key, const Block& block) {
-    auto schedule = expand_key(key);
+Block aes256_encrypt_block_soft(const SecretKey& key, const Block& block) { return aes_encrypt_block_soft<8, 14>(key, block); }
 
-    std::array<std::uint8_t, 16> state{};
-    for (int i = 0; i < 16; ++i) state[i] = static_cast<std::uint8_t>(block[i]);
-
-    add_round_key(state, schedule, 0);
-    for (int round = 1; round < kNr; ++round) {
-        sub_bytes(state);
-        shift_rows(state);
-        mix_columns(state);
-        add_round_key(state, schedule, round);
-    }
-    sub_bytes(state);
-    shift_rows(state);
-    add_round_key(state, schedule, kNr);
-    wipe_schedule(schedule);
-
-    Block out{};
-    for (int i = 0; i < 16; ++i) out[i] = static_cast<std::byte>(state[i]);
-    return out;
-}
+Block aes128_encrypt_block_soft(const SecretKey& key, const Block& block) { return aes_encrypt_block_soft<4, 10>(key, block); }
 
 } // namespace aeslib::detail

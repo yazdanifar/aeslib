@@ -63,6 +63,16 @@ constexpr std::uint32_t kMaxPbkdf2Iterations = 50'000'000;
 
 void SecretKey::save_to_file_encrypted(const std::filesystem::path& path, std::string_view passphrase,
                                         std::uint32_t iterations) const {
+    // The wrapped-key format always wraps the full kKeySizeBytes of bytes_ —
+    // for an AES-128 key that would silently include the 16 unused-but-random
+    // bytes past its logical end as if they were key material, and
+    // load_from_file_encrypted always reconstructs a KeySize::Aes256 key, so
+    // the round trip would fabricate 16 bytes of "key" never part of the
+    // original. See DESIGN.md's "Additional AES modes" section.
+    if (size_ != KeySize::Aes256) {
+        throw LimitError("encrypted key storage currently supports AES-256 keys only");
+    }
+
     // Too few iterations weakens or (at 0) entirely defeats PBKDF2
     // stretching. NIST SP 800-132 floors PBKDF2 at 1000 iterations.
     if (iterations < kMinPbkdf2Iterations) {

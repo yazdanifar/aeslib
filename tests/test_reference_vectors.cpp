@@ -41,8 +41,9 @@ std::vector<std::byte> bytes_from_hex(const std::string& hex) {
 }
 
 // SecretKey has no public constructor from raw bytes — round-trip through a
-// temp file using the same wire format save_to_file() writes (same approach
-// as test_aes_core.cpp's key_from_bytes).
+// temp file using the same wire format save_to_file() writes (version 2:
+// version || size_marker || size_marker bytes of key; same approach as
+// test_aes_core.cpp's key_from_bytes).
 SecretKey key_from_hex(const std::string& hex) {
     static int counter = 0;
     auto path = std::filesystem::temp_directory_path() /
@@ -50,7 +51,8 @@ SecretKey key_from_hex(const std::string& hex) {
     const auto bytes = bytes_from_hex(hex);
     {
         std::ofstream out(path, std::ios::binary);
-        out.put(static_cast<char>(1)); // version
+        out.put(static_cast<char>(2)); // version
+        out.put(static_cast<char>(bytes.size())); // size marker
         out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     }
     SecretKey key = SecretKey::load_from_file(path);

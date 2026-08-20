@@ -13,6 +13,8 @@ add_library(aeslib STATIC
   src/aes256_ctr.cpp
   src/aes_core_soft.cpp
   src/aes_core_ni.cpp
+  src/aes_gcm.cpp
+  src/ghash.cpp
   src/cpu_detect.cpp
   src/csprng.cpp
   src/key.cpp

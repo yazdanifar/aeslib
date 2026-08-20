@@ -2,12 +2,18 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
+#include <string_view>
 
 namespace aeslib {
 
-inline constexpr std::size_t kKeySizeBytes = 32; // AES-256
+inline constexpr std::size_t kKeySizeBytes = 32; // AES-256; storage capacity for both key sizes
 inline constexpr std::uint32_t kDefaultPbkdf2Iterations = 600'000; // OWASP recommendation
+
+// Logical key size. The AES-128 variant only uses the first 16 bytes of the
+// underlying (always 32-byte) storage — see SecretKey's `bytes_` comment.
+enum class KeySize : std::uint8_t { Aes128 = 16, Aes256 = 32 };
 
 class SecretKey;
 
@@ -35,9 +41,20 @@ public:
     // csprng.hpp) — never a general-purpose PRNG.
     [[nodiscard]] static SecretKey generate();
 
-    // Loads a key previously written by save(). File format: 1-byte version
-    // marker followed by kKeySizeBytes raw key bytes.
+    // Same, but for the requested key size. The full kKeySizeBytes of
+    // backing storage is always CSPRNG-filled regardless of `size` (see
+    // `bytes_`); only the logical size marker differs.
+    [[nodiscard]] static SecretKey generate(KeySize size);
+
+    // Loads a key previously written by save_to_file(). File format
+    // (version 2): version(1) || size_marker(1, 16 or 32) ||
+    // size_marker bytes of key.
     [[nodiscard]] static SecretKey load_from_file(const std::filesystem::path& path);
+
+    // The key's logical size (AES-128 or AES-256).
+    [[nodiscard]] KeySize size() const noexcept;
+    // Same, as a byte count (16 or 32) — convenience over static_cast<size_t>(size()).
+    [[nodiscard]] std::size_t size_bytes() const noexcept;
 
     SecretKey(const SecretKey&) = delete;
     SecretKey& operator=(const SecretKey&) = delete;
@@ -55,6 +72,8 @@ public:
     // File format is a fixed 101-byte structure: magic, version, salt (16 bytes),
     // PBKDF2 iteration count, nonce, encrypted key, HMAC tag. See DESIGN.md.
     // `iterations` defaults to 600,000 (OWASP recommendation for password hashing).
+    // AES-256 keys only — throws LimitError for an AES-128 key (see DESIGN.md's
+    // "Additional AES modes" section for why this format isn't extended yet).
     void save_to_file_encrypted(const std::filesystem::path& path, std::string_view passphrase,
                                  std::uint32_t iterations = kDefaultPbkdf2Iterations) const;
 
@@ -79,7 +98,12 @@ private:
     void lock_memory() noexcept;
     void unlock_memory() noexcept;
 
+    // Always the full 32-byte capacity, regardless of size_: an AES-128 key
+    // only ever reads/saves the first 16 bytes, but the remaining 16 are
+    // still real CSPRNG output, locked and wiped like the rest — avoids
+    // branchy partial-fill logic for a harmless simplification.
     std::array<std::byte, kKeySizeBytes> bytes_{};
+    KeySize size_ = KeySize::Aes256;
 };
 
 } // namespace aeslib

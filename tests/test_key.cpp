@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 
@@ -49,7 +50,21 @@ AESLIB_TEST(key, load_bad_version_throws_format_error) {
     {
         std::ofstream out(path, std::ios::binary);
         out.put(static_cast<char>(99)); // not kKeyFileVersion
+        out.put(static_cast<char>(32)); // size marker
         std::string padding(aeslib::kKeySizeBytes, '\0');
+        out.write(padding.data(), static_cast<std::streamsize>(padding.size()));
+    }
+    CHECK_THROWS(SecretKey::load_from_file(path), FormatError);
+    std::filesystem::remove(path);
+}
+
+AESLIB_TEST(key, load_bad_size_marker_throws_format_error) {
+    const auto path = std::filesystem::temp_directory_path() / "aeslib_test_bad_size_marker.key";
+    {
+        std::ofstream out(path, std::ios::binary);
+        out.put(static_cast<char>(2)); // kKeyFileVersion
+        out.put(static_cast<char>(24)); // not 16 or 32
+        std::string padding(24, '\0');
         out.write(padding.data(), static_cast<std::streamsize>(padding.size()));
     }
     CHECK_THROWS(SecretKey::load_from_file(path), FormatError);
@@ -60,11 +75,45 @@ AESLIB_TEST(key, load_truncated_file_throws_format_error) {
     const auto path = std::filesystem::temp_directory_path() / "aeslib_test_truncated.key";
     {
         std::ofstream out(path, std::ios::binary);
-        out.put(static_cast<char>(1));
+        out.put(static_cast<char>(2)); // kKeyFileVersion
+        out.put(static_cast<char>(32)); // size marker
         out.put(static_cast<char>(0)); // only 1 of 32 key bytes present
     }
     CHECK_THROWS(SecretKey::load_from_file(path), FormatError);
     std::filesystem::remove(path);
+}
+
+AESLIB_TEST(key, generate_aes128_has_correct_size) {
+    const SecretKey key = SecretKey::generate(aeslib::KeySize::Aes128);
+    CHECK(key.size() == aeslib::KeySize::Aes128);
+    CHECK_EQ(key.size_bytes(), std::size_t{16});
+}
+
+AESLIB_TEST(key, generate_default_is_aes256) {
+    const SecretKey key = SecretKey::generate();
+    CHECK(key.size() == aeslib::KeySize::Aes256);
+    CHECK_EQ(key.size_bytes(), std::size_t{32});
+}
+
+AESLIB_TEST(key, aes128_save_load_round_trip) {
+    const SecretKey original = SecretKey::generate(aeslib::KeySize::Aes128);
+    const auto path = std::filesystem::temp_directory_path() / "aeslib_test_roundtrip128.key";
+    original.save_to_file(path);
+    const SecretKey loaded = SecretKey::load_from_file(path);
+    std::filesystem::remove(path);
+    CHECK(loaded.size() == aeslib::KeySize::Aes128);
+    // Only the first 16 bytes are logically part of an AES-128 key; compare
+    // just that prefix (the trailing 16 bytes of storage are unused padding
+    // on both sides, see key.hpp's bytes_ comment).
+    const auto& original_bytes = aeslib::detail::key_bytes(original);
+    const auto& loaded_bytes = aeslib::detail::key_bytes(loaded);
+    CHECK(std::equal(original_bytes.begin(), original_bytes.begin() + 16, loaded_bytes.begin()));
+}
+
+AESLIB_TEST(key, aes128_save_to_file_encrypted_throws_limit_error) {
+    const SecretKey key = SecretKey::generate(aeslib::KeySize::Aes128);
+    const auto path = std::filesystem::temp_directory_path() / "aeslib_test_aes128_encrypted.key";
+    CHECK_THROWS(key.save_to_file_encrypted(path, "passphrase"), aeslib::LimitError);
 }
 
 #if defined(__linux__)

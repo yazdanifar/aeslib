@@ -122,10 +122,90 @@ Block aes256_encrypt_block_ni(const SecretKey& key, const Block& block) {
     return out;
 }
 
+namespace {
+
+constexpr int kNumRoundKeys128 = 11; // AES-128: 10 rounds + 1 initial whitening key
+
+// Standard single-word AES-128 AES-NI key-expansion step (Intel's "AES-NI
+// Sample Library" white paper's KEY_128_ASSIST macro): one
+// _mm_aeskeygenassist_si128 call per round constant, no odd/even split
+// needed since AES-128's schedule advances one word (not two) per step.
+__m128i key_128_assist(__m128i temp1, __m128i temp2) {
+    temp2 = _mm_shuffle_epi32(temp2, 0xff);
+    __m128i temp3 = _mm_slli_si128(temp1, 0x4);
+    temp1 = _mm_xor_si128(temp1, temp3);
+    temp3 = _mm_slli_si128(temp3, 0x4);
+    temp1 = _mm_xor_si128(temp1, temp3);
+    temp3 = _mm_slli_si128(temp3, 0x4);
+    temp1 = _mm_xor_si128(temp1, temp3);
+    temp1 = _mm_xor_si128(temp1, temp2);
+    return temp1;
+}
+
+std::array<__m128i, kNumRoundKeys128> expand_key128_ni(const SecretKey& key) {
+    std::array<__m128i, kNumRoundKeys128> schedule{};
+    const auto* raw_key_bytes = reinterpret_cast<const unsigned char*>(key_bytes(key).data());
+
+    __m128i temp1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(raw_key_bytes));
+    schedule[0] = temp1;
+
+    // Unrolled rather than looped: _mm_aeskeygenassist_si128's round-constant
+    // argument must be a compile-time immediate, so it can't be read out of
+    // an array with a runtime index.
+    __m128i temp2;
+#define AESLIB_KEY128_STEP(rcon, idx)                        \
+    temp2 = _mm_aeskeygenassist_si128(temp1, rcon);           \
+    temp1 = key_128_assist(temp1, temp2);                     \
+    schedule[idx] = temp1
+
+    AESLIB_KEY128_STEP(0x01, 1);
+    AESLIB_KEY128_STEP(0x02, 2);
+    AESLIB_KEY128_STEP(0x04, 3);
+    AESLIB_KEY128_STEP(0x08, 4);
+    AESLIB_KEY128_STEP(0x10, 5);
+    AESLIB_KEY128_STEP(0x20, 6);
+    AESLIB_KEY128_STEP(0x40, 7);
+    AESLIB_KEY128_STEP(0x80, 8);
+    AESLIB_KEY128_STEP(0x1B, 9);
+    AESLIB_KEY128_STEP(0x36, 10);
+
+#undef AESLIB_KEY128_STEP
+
+    return schedule;
+}
+
+// Same rationale as the AES-256 wipe_schedule() above.
+void wipe_schedule(std::array<__m128i, kNumRoundKeys128>& schedule) noexcept {
+    auto* bytes = reinterpret_cast<volatile unsigned char*>(schedule.data());
+    for (std::size_t i = 0; i < sizeof(__m128i) * kNumRoundKeys128; ++i) bytes[i] = 0;
+}
+
+} // namespace
+
+Block aes128_encrypt_block_ni(const SecretKey& key, const Block& block) {
+    auto schedule = expand_key128_ni(key);
+
+    __m128i state = _mm_loadu_si128(reinterpret_cast<const __m128i*>(block.data()));
+    state = _mm_xor_si128(state, schedule[0]);
+    for (int round = 1; round < kNumRoundKeys128 - 1; ++round) {
+        state = _mm_aesenc_si128(state, schedule[static_cast<std::size_t>(round)]);
+    }
+    state = _mm_aesenclast_si128(state, schedule[kNumRoundKeys128 - 1]);
+    wipe_schedule(schedule);
+
+    Block out{};
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(out.data()), state);
+    return out;
+}
+
 #else
 
 Block aes256_encrypt_block_ni(const SecretKey&, const Block&) {
     throw std::logic_error("aes256_encrypt_block_ni called on a non-x86 build");
+}
+
+Block aes128_encrypt_block_ni(const SecretKey&, const Block&) {
+    throw std::logic_error("aes128_encrypt_block_ni called on a non-x86 build");
 }
 
 #endif

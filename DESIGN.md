@@ -203,6 +203,29 @@ silently wrapping if a caller ever hands them more than that. The check
 takes a size, not a buffer, so `tests/test_ctr.cpp` can exercise the exact
 boundary without allocating a real 64 GiB vector.
 
+**Why nonce reuse is strictly worse under GCM than under CTR.** `AesGcm`
+(see "Additional AES modes" below) uses this exact same nonce||counter
+construction for its keystream, plus a GHASH-based authentication tag. Under
+plain CTR, reusing a (key, nonce) pair leaks the XOR of the two plaintexts —
+bad, but limited to confidentiality. Under GCM, reusing a (key, nonce) pair
+is worse in kind, not just degree: Joux's "forbidden attack" shows that two
+ciphertexts authenticated under the same (key, nonce) let an attacker solve
+a low-degree polynomial equation over GF(2^128) for the GHASH subkey `H`
+itself, since `H` is a fixed, key-derived constant that appears identically
+in both tags' GHASH computation. Once `H` is recovered, the attacker can
+forge a valid authentication tag for *any* ciphertext of their choosing under
+that key — not just replay or bit-flip an existing message, but construct
+new ones the receiver will accept as authentic. The 2016 "Nonce-Disrespecting
+Adversaries" survey found this wasn't theoretical: real HTTPS servers were
+found reusing GCM nonces in practice, most from buggy random-nonce generation
+colliding at lower-than-expected rates or from counter state not being
+carried correctly across process restarts/failover. `AesGcm::encrypt()`
+generates a fresh random 96-bit nonce per call from the OS CSPRNG (same
+source, same birthday-bound reasoning as `Aes256Ctr::encrypt()` above) for
+exactly this reason — a random nonce still has the same 2^48-ish birthday
+bound as CTR's, but the consequence of a collision, should one ever occur,
+is qualitatively worse for GCM than for CTR.
+
 ## On-disk container format
 
 Key and ciphertext are always written to **separate files** — the
@@ -219,14 +242,29 @@ Ciphertext container (`.aesc`), all integers little-endian:
 | 17–24 | ct_len     | `uint64_t`, ciphertext length in bytes|
 | 25–   | ciphertext | `ct_len` bytes                        |
 
-Key file: `version (1 byte)` + `32` raw key bytes, written with `0600`
-permissions on POSIX.
+GCM ciphertext container (`.aesg`, see "Additional AES modes" below), all
+integers little-endian — a distinct magic from the CTR container's `"AESC"`
+so the two file types can't be confused with each other:
 
-Both formats carry an explicit version byte specifically so a future format
-change (e.g. switching to an AEAD mode and adding an authentication tag, or
-a different nonce size) can be introduced without breaking the ability to
-read files written by an older version of the library — a reader can
-branch on the version byte before interpreting the rest of the layout.
+| bytes | field      | meaning                                |
+|-------|------------|-----------------------------------------|
+| 0–3   | magic      | ASCII `"AESG"`                         |
+| 4     | version    | format version, currently `1`          |
+| 5–16  | nonce      | 12-byte GCM nonce                      |
+| 17–32 | tag        | 16-byte GCM authentication tag         |
+| 33–40 | ct_len     | `uint64_t`, ciphertext length in bytes |
+| 41–   | ciphertext | `ct_len` bytes                         |
+
+Key file (version 2): `version (1 byte)` + `size_marker (1 byte, = 16 or
+32)` + `size_marker` raw key bytes, written with `0600` permissions on
+POSIX. (Version 1, predating AES-128 support, had no size marker and always
+wrote 32 bytes; see "Additional AES modes" below for why it was bumped
+rather than kept compatible.)
+
+All formats carry an explicit version byte specifically so a future format
+change (e.g. a different nonce size) can be introduced without breaking the
+ability to read files written by an older version of the library — a reader
+can branch on the version byte before interpreting the rest of the layout.
 
 ## Key handling
 
@@ -633,6 +671,151 @@ This section's design decisions were informed by:
   enough to be extracted, which is precisely the class of attack no
   process-level `mlock`/wipe scheme (this one included) can defend against.
 
+## Additional AES modes: AES-128 + AES-GCM (bonus)
+
+This bonus adds two things: AES-128 key support (alongside the existing
+AES-256), and AES-GCM, an authenticated mode, alongside the existing
+unauthenticated `Aes256Ctr`. CBC mode was deliberately **not** implemented —
+see below for why.
+
+**Why a `KeySize` discriminant on `SecretKey`, not a template.** The
+obvious alternative was `template <KeySize> class SecretKey` (or a
+`SecretKey128`/`SecretKey256` pair of types). Both were rejected: `SecretKey`
+is the one type touched by every hardened bonus in this codebase (3.4's
+encrypted storage, 3.5's misuse-resistant API, 3.6's memory protection) —
+templating it would force either duplicating all of that logic per
+instantiation or threading a template parameter through every function that
+currently takes `const SecretKey&`, for a blast radius far out of proportion
+to "the key is sometimes 16 bytes instead of 32." A runtime `size_` field
+keeps every existing call site (`Aes256Ctr`, both backends' key-expansion
+code, `save_to_file`/`load_from_file`) touched by nothing but the two
+addition points that actually need to branch on size: the block-cipher
+dispatch (`aes_gcm.cpp`'s `encrypt_block`) and the file-format size marker.
+`bytes_` itself stays a fixed 32-byte array rather than becoming
+variable-length — an AES-128 key only reads/saves its first 16 bytes, and
+the unused 16 are still genuine CSPRNG output, `mlock`ed and wiped exactly
+like the rest, which is a simpler invariant to maintain than a
+sometimes-16/sometimes-32-byte buffer would be.
+
+**Software backend: one template, not a second hand-written cipher.**
+`src/aes_core_soft.cpp`'s `expand_key`/`add_round_key`/`wipe_schedule`/the
+block-encrypt body were already loop-driven over `Nk`/`Nr` rather than
+unrolled, so parameterizing them as `template <int Nk, int Nr>` functions
+was the low-risk path: `aes256_encrypt_block_soft` becomes a one-line call
+to `aes_encrypt_block_soft<8, 14>`, provably behaviorally identical to the
+pre-refactor code (confirmed by the pre-existing FIPS-197 Appendix C.3 KAT
+continuing to pass unchanged), and `aes128_encrypt_block_soft` is
+`aes_encrypt_block_soft<4, 10>`. The one schedule-generation subtlety
+(FIPS-197 5.2's extra `SubWord` step for `Nk > 6`) is written as a generic
+`i % Nk == 4` branch that's simply never true when `Nk == 4`, so AES-128's
+simpler 10-round schedule falls out of the same code path with no separate
+`if constexpr` or specialization needed.
+
+**AES-NI backend: a wholly separate routine, not shared code.** The
+existing AES-256 key expansion (`expand_key_ni` in `aes_core_ni.cpp`) is
+hand-unrolled via macros built around the Nk=8 schedule's two-word-per-step
+`temp1`/`temp3` structure, driven by the fact that
+`_mm_aeskeygenassist_si128`'s round-constant argument must be a
+compile-time immediate (so it can't be looped over an array at runtime).
+AES-128's schedule advances one word per step, not two — a structurally
+different shape, not a smaller instance of the same one — so rather than
+contort the existing macros to also handle a single-chain schedule, AES-128
+gets its own `expand_key128_ni`/`aes128_encrypt_block_ni`, following the
+standard `KEY_128_ASSIST` pattern from Intel's "Advanced Encryption
+Standard Instructions (AES-NI)" white paper (Gueron). The existing AES-256
+code is untouched — zero regression risk to code that's already been through
+two independent review passes (see bonus 3.4's log above).
+
+**GCM design.** `AesGcm::encrypt()`/`decrypt()` (`include/aeslib/aes_gcm.hpp`,
+`src/aes_gcm.cpp`) follow NIST SP 800-38D: for a 96-bit nonce, `J0 = nonce
+|| 0x00000001` (the same nonce||counter construction `Aes256Ctr` already
+uses, see the "Nonce/IV strategy" section above, which now also covers why
+nonce reuse is strictly worse under GCM than CTR), keystream blocks are
+generated starting at counter 2 (counter 1/`J0` is reserved for encrypting
+the tag), and the authentication tag is `E(K, J0) XOR GHASH_H(AAD,
+ciphertext)`. This reserves one counter value `J0` uses, so this
+construction's per-invocation limit is 2^32-2 blocks, one less than CTR's
+2^32. `decrypt()` recomputes the expected tag and compares it against the
+stored one via the existing `detail::constant_time_equal` (already used by
+bonus 3.4's HMAC verification) *before* decrypting anything — the same
+verify-then-decrypt discipline as `load_from_file_encrypted`, so a
+tampered ciphertext or tag is rejected without ever touching the (still
+attacker-influenced) ciphertext bytes with the decrypt transform.
+
+**GHASH implementation and constant-time design.** `src/ghash.cpp`
+implements GF(2^128) multiplication (`gf128_mul`, NIST SP 800-38D
+Algorithm 1) as a 128-iteration bit-serial shift-and-conditionally-XOR
+loop, using a bitmask rather than an `if` to fold in each bit of the
+secret operand — the same discipline `gmul`/`gf256_inv` already apply to
+AES's S-box in `aes_core_soft.cpp`, extended here because both `gf128_mul`
+operands are secret-derived (the running GHASH accumulator, and the
+GHASH subkey `H = E(K, 0^128)`). `ghash()` then folds zero-padded 16-byte
+blocks of AAD, then ciphertext, then a final "length block" (the
+bit-lengths of AAD and ciphertext, big-endian) into an accumulator via
+repeated `gf128_mul` calls, per SP 800-38D §6.4. No PCLMULQDQ
+acceleration is used — GHASH stays portable, branch-free C++ like the rest
+of the non-AES-NI code, so it needs no `set_source_files_properties`
+scoping in `CMakeLists.txt` the way `aes_core_ni.cpp`'s `-maes` flag does.
+
+**Container format.** See the "On-disk container format" section above for
+the `.aesg` wire-format table (distinct `"AESG"` magic from `Aes256Ctr`'s
+`"AESC"`, so the two can't be confused) and the key-file format's version-2
+size marker.
+
+**Scope limitations, stated explicitly:**
+
+- **CBC mode was not implemented.** GCM was chosen instead because it's
+  forward-cipher-only — the existing AES-NI/software backends only ever
+  implement AES *encryption* (CTR never needed decryption, so
+  `InvSubBytes`/`InvMixColumns`/etc. simply don't exist in this codebase),
+  and GCM's keystream generation is exactly that same forward-only
+  operation. CBC *decryption* would require implementing the full AES
+  inverse cipher in both backends — real new work nothing else in this
+  library needs — for a mode that's also a strict security downgrade from
+  GCM (confidentiality only, no integrity/authentication, and CBC padding
+  oracles are a well-documented real-world attack class GCM avoids
+  entirely by not padding at all). Given a choice between implementing one
+  new mode's forward-only cipher work (GCM) versus another mode's
+  forward-and-inverse cipher work for a weaker security property (CBC),
+  GCM was the better use of the same engineering effort.
+- **`Aes256Ctr` remains AES-256-only.** `SecretKey::size_bytes()` makes
+  AES-128 available to it in principle, but `Aes256Ctr`'s name, its
+  existing test/reference-vector suite, and its role as this library's
+  original (still supported) unauthenticated mode were left untouched;
+  `AesGcm` is the one construction that dispatches on key size.
+- **`save_to_file_encrypted`/`load_from_file_encrypted` (bonus 3.4) remain
+  AES-256-only.** The wrapped-key format wraps the full `kKeySizeBytes` (32)
+  of `bytes_` unconditionally; for an AES-128 key that would silently
+  include the 16 unused-but-random bytes past its logical end as if they
+  were key material, and `load_from_file_encrypted` always reconstructs a
+  `KeySize::Aes256` key on the way back out — so an AES-128 key's round
+  trip through that format would silently fabricate 16 bytes of "key" that
+  were never part of the original. `save_to_file_encrypted` now guards
+  against this explicitly (`throw LimitError` for a non-AES-256 key)
+  rather than leaving it as a silent correctness bug. Extending the
+  wrapped-key format itself to support AES-128 (its own size marker, and a
+  variable-length wrapped-key field instead of the current fixed 32 bytes)
+  is future work, not attempted in this pass.
+
+This section's design decisions were informed by:
+
+- **[NIST SP 800-38D](https://csrc.nist.gov/pubs/sp/800/38/d/final)**: the
+  GCM specification itself — `J0` construction, the GHASH function over
+  GF(2^128), tag computation/verification, and the CAVP validation-vector
+  program that motivated cross-checking hardcoded vectors against two
+  independent implementations (Python's `cryptography` and
+  `pycryptodome`) rather than trusting one source, mirroring
+  `tests/test_reference_vectors.cpp`'s existing methodology.
+- **Intel's "Advanced Encryption Standard Instructions (AES-NI)" white
+  paper (Gueron)**: the standard `AESKEYGENASSIST`-based AES-128
+  key-expansion routine (`KEY_128_ASSIST`), the basis for
+  `expand_key128_ni`.
+- **Joux's "forbidden attack" on GCM nonce reuse**, and the 2016
+  "Nonce-Disrespecting Adversaries" survey: the source for the nonce-reuse
+  severity comparison in the "Nonce/IV strategy" section above — real
+  HTTPS servers were found reusing GCM nonces in practice, not merely a
+  theoretical concern.
+
 ## Randomness
 
 Keys and nonces are generated via the OS's native CSPRNG (`BCryptGenRandom`
@@ -643,14 +826,16 @@ on Windows, `getrandom(2)` on Linux, `arc4random_buf` elsewhere) — never
 
 Four exception types cover this library's failure modes: `aeslib::IoError`
 (filesystem/OS failures), `aeslib::FormatError` (malformed container/key
-files), `aeslib::LimitError` (a request exceeds a format-imposed size
-limit — currently just the CTR block-counter bound, see the nonce/IV
-strategy section above), and `aeslib::AuthenticationError` (a
-passphrase-protected key file's HMAC tag doesn't verify — wrong passphrase
-or tampered/corrupted file, see bonus 3.4 above; kept distinct from
-`FormatError` so callers can tell "ask for the passphrase again" apart from
-"file is unreadable"). Nothing in the public API uses output-parameter
-error codes.
+files), `aeslib::LimitError` (a request exceeds a format-imposed size limit,
+or asks for an operation this library deliberately doesn't support — the
+CTR/GCM block-counter bounds, see the nonce/IV strategy section above, and
+`save_to_file_encrypted` rejecting a non-AES-256 key, see "Additional AES
+modes" above), and `aeslib::AuthenticationError` (a passphrase-protected key
+file's HMAC tag doesn't verify, or a GCM container's authentication tag
+doesn't verify — wrong passphrase/key/nonce/AAD, or a tampered/corrupted
+file; kept distinct from `FormatError` so callers can tell "ask for the
+passphrase again" / "this data isn't authentic" apart from "file is
+unreadable"). Nothing in the public API uses output-parameter error codes.
 
 ## Known limitations / threat model
 
