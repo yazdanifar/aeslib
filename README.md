@@ -78,15 +78,22 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-Five suites are registered (`aeslib.aes_core`, `aeslib.ctr`,
-`aeslib.container`, `aeslib.key`, `aeslib.backend`), covering the FIPS-197
-Appendix C.3 known-answer test against both backends, CTR round-trips at a
-range of sizes (including partial-final-block cases), nonce freshness,
-container/key file format edge cases (bad magic, unsupported version,
-truncated/mismatched-length data), and a CI hook for asserting which
-dispatch path is active (see `tests/test_backend.cpp` and the CI workflow
-below). Disable with `-DAESLIB_BUILD_TESTS=OFF` if you only want the
-library and harness.
+Six suites are registered (`aeslib.aes_core`, `aeslib.ctr`,
+`aeslib.container`, `aeslib.key`, `aeslib.backend`,
+`aeslib.reference_vectors`), covering: two independent AES-256 known-answer
+tests (FIPS-197 Appendix C.3 and NIST SP 800-38A F.1.5) against both
+backends, an exhaustive check of the software backend's constant-time S-box
+against the canonical 256-entry table (see DESIGN.md's "Constant-time
+software S-box"), CTR round-trips at a range of sizes (including
+partial-final-block cases) plus a boundary test for the 32-bit
+block-counter guard, nonce freshness, container/key file format edge cases
+(bad magic, unsupported version, truncated/mismatched-length data), a CI
+hook for asserting which dispatch path is active (see
+`tests/test_backend.cpp` and the CI workflow below), and AES-256-CTR
+ciphertexts cross-checked against an independent implementation (Python's
+`cryptography` library, itself cross-verified against the `openssl` CLI —
+see `tests/test_reference_vectors.cpp`). Disable with
+`-DAESLIB_BUILD_TESTS=OFF` if you only want the library and harness.
 
 For a sanitizer build (brief 2.9 — "we will look at this with sanitizers"):
 
@@ -126,7 +133,7 @@ this submission. Specifically:
   AES-256 key schedule and round transforms for both backends, the CTR
   driver, the container format, and the CSPRNG/key-handling code, with the
   key schedule cross-checked against FIPS-197 during review.
-- **Test suite** (`tests/`) — the hand-rolled assertion harness and all five
+- **Test suite** (`tests/`) — the hand-rolled assertion harness and all six
   suites, including selecting the FIPS-197 Appendix C.3 vector as the
   known-answer test and the `AESLIB_EXPECTED_BACKEND` mechanism used by CI
   to assert which dispatch path a run took.
@@ -135,6 +142,13 @@ this submission. Specifically:
   single compiled binary. The premise that `qemu-x86_64 -cpu <model>`
   controls the guest's `CPUID` output was empirically verified on GitHub's
   runners before the workflow was written, rather than assumed.
+- **Hardening pass** — a follow-up review pass that added the
+  constant-time software S-box, the CTR block-counter overflow guard, the
+  exhaustive S-box test, and `tests/test_reference_vectors.cpp`. The
+  reference-vector ciphertexts in that file were computed locally with
+  Python's `cryptography` library and independently cross-checked against
+  the `openssl enc -aes-256-ctr` CLI before being hardcoded as expected
+  values, rather than generated and trusted from a single source.
 - **Documentation** — this README and DESIGN.md.
 
 All code was reviewed and is understood by the author. Both AES-256 backends

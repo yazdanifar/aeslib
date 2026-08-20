@@ -5,14 +5,18 @@
 // directly here. Correctness is instead anchored at the block-cipher layer
 // (test_aes_core.cpp's FIPS-197 KAT) plus the self-consistency checks below.
 
+#include <cstdint>
 #include <vector>
 
 #include "aeslib/aes256_ctr.hpp"
+#include "aeslib/exceptions.hpp"
+#include "src/internal.hpp"
 #include "test_support.hpp"
 
 namespace {
 
 using aeslib::Aes256Ctr;
+using aeslib::LimitError;
 using aeslib::SecretKey;
 
 std::vector<std::byte> make_bytes(std::size_t size) {
@@ -52,6 +56,20 @@ AESLIB_TEST(ctr, repeated_encryption_uses_fresh_nonces) {
     // would be a keystream-reuse vulnerability.
     CHECK(first.nonce != second.nonce);
     CHECK(first.ciphertext != second.ciphertext);
+}
+
+AESLIB_TEST(ctr, block_count_guard_rejects_input_beyond_counter_range) {
+    // The CTR construction's block counter is 32 bits, so a single call can
+    // address at most 2^32 blocks (64 GiB) before it would wrap and reuse
+    // keystream. validate_block_count() takes a size, not a real buffer, so
+    // this exercises the boundary without allocating 64 GiB.
+    constexpr std::uint64_t kMaxBlocks = std::uint64_t{1} << 32;
+    constexpr std::uint64_t kMaxBytes = kMaxBlocks * 16;
+
+    // Exactly at the limit: must NOT throw.
+    aeslib::detail::validate_block_count(static_cast<std::size_t>(kMaxBytes));
+    // One byte beyond, forcing one extra block past the counter's range.
+    CHECK_THROWS(aeslib::detail::validate_block_count(static_cast<std::size_t>(kMaxBytes) + 1), LimitError);
 }
 
 AESLIB_TEST(ctr, decrypting_with_wrong_key_does_not_recover_plaintext) {

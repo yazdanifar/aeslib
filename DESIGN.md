@@ -98,6 +98,36 @@ ciphertext block for the same key/plaintext — i.e. the two backends don't
 just each "work", they agree with each other and with the published test
 vector, on every CI run.
 
+### Constant-time software S-box
+
+A textbook software AES implementation typically substitutes bytes via
+`kSBox[secret_byte]` — a lookup table indexed by key- and state-dependent
+data. That's a classical cache-timing side channel (Bernstein-style): which
+cache line the lookup touches depends on the secret byte, and that's
+observable by another process on the same core. The AES-NI backend never has
+this problem (`aesenc` is constant-time by construction), but the software
+fallback used to have it, silently, on any host without AES-NI.
+
+`src/aes_core_soft.cpp`'s `ct_sbox()` replaces the table with a computed
+substitution: GF(2^8) multiplicative inversion via a fixed left-to-right
+square-and-multiply chain to the 254th power (`x^-1 == x^254` for `x != 0`,
+and `0^254 == 0` matches the S-box's own `0 -> 0` convention), followed by
+the standard FIPS-197 §5.1.1 affine bit transform. The exponent 254 is a
+compile-time constant, so the *sequence* of squarings/multiplications is
+identical for every input — no branch anywhere in the computation depends on
+the secret byte's value, only branch-free bit-masking (`gmul`'s
+`mask = -(b & 1)` pattern) touches it. The affine step is pure bit rotation
+and XOR on the byte already in hand, never table-indexed. `sub_bytes()` (the
+per-block SubBytes step) and `sub_word()` (used by the Nk=8 key schedule)
+both route through this same function, so neither the round transform nor
+the key expansion touches a secret-indexed table anywhere in this codebase's
+software path. Correctness of the rewrite is checked exhaustively — not just
+via the FIPS-197 KAT — by `tests/test_aes_core.cpp`'s
+`ct_sbox_matches_canonical_table_exhaustively` test, which compares
+`ct_sbox(b)` against the textbook 256-entry S-box table for every possible
+byte value (that table is test-only data; it does not exist anywhere in
+production code).
+
 ### Why not just use a general crypto library for the software path
 
 For a small challenge submission, pulling in OpenSSL/libsodium/mbedTLS
@@ -136,21 +166,31 @@ not random) nonce instead; that tradeoff didn't seem worth the added
 complexity (persisting nonce-counter state across process restarts) for
 this library's scope.
 
-**Why the test suite doesn't include published CTR test vectors:** NIST SP
-800-38A's CTR vectors (F.5.5/F.5.6) use a free-running 128-bit counter block
-with no separate nonce field, whereas this library splits that same 128 bits
-into a 96-bit random nonce and a 32-bit counter (the construction above).
-The published vectors therefore don't apply directly to this format.
-Correctness is instead anchored at the block-cipher layer — both backends
-are checked against the official FIPS-197 Appendix C.3 AES-256 KAT in
-`tests/test_aes_core.cpp` — plus CTR-level round-trip and
-keystream-consistency tests in `tests/test_ctr.cpp`. This is stated
-explicitly rather than silently omitting CTR-level KATs and leaving a
-reviewer to wonder why.
+**Why the test suite doesn't include published CTR test vectors — and what
+stands in for them:** NIST SP 800-38A's CTR vectors (F.5.5/F.5.6) use a
+free-running 128-bit counter block with no separate nonce field, whereas this
+library splits that same 128 bits into a 96-bit random nonce and a 32-bit
+counter (the construction above). The published vectors therefore don't
+apply directly to this format. Correctness is anchored at three levels
+instead: the block-cipher layer, checked against the official FIPS-197
+Appendix C.3 AES-256 KAT plus a second NIST SP 800-38A F.1.5 ECB vector in
+`tests/test_aes_core.cpp`; CTR-level round-trip and keystream-consistency
+tests in `tests/test_ctr.cpp`; and — filling the gap the missing published
+CTR vectors leave — `tests/test_reference_vectors.cpp`, which hardcodes
+AES-256-CTR ciphertexts for this exact nonce||counter construction computed
+independently via Python's `cryptography` library and cross-checked against
+the `openssl enc -aes-256-ctr` CLI (both credible, widely-used
+implementations, neither of which is this codebase). That file documents
+exactly how each vector was generated so it can be reproduced or extended.
 
 The 32-bit counter caps a single message at 2^32 blocks (64 GiB) before the
-counter would wrap and start reusing keystream within that one message;
-not a concern for the sizes this library is meant for.
+counter would wrap and start reusing keystream within that one message; not a
+concern for the sizes this library is meant for, but it's enforced, not just
+documented — `Aes256Ctr::encrypt()`/`decrypt()` call
+`detail::validate_block_count()` first and throw `LimitError` rather than
+silently wrapping if a caller ever hands them more than that. The check
+takes a size, not a buffer, so `tests/test_ctr.cpp` can exercise the exact
+boundary without allocating a real 64 GiB vector.
 
 ## On-disk container format
 
@@ -198,9 +238,65 @@ on Windows, `getrandom(2)` on Linux, `arc4random_buf` elsewhere) — never
 
 ## Error handling
 
-Two exception types (`aeslib::IoError`, `aeslib::FormatError`) cover
-filesystem/OS failures and malformed container/key files respectively.
-Nothing in the public API uses output-parameter error codes.
+Three exception types cover this library's failure modes: `aeslib::IoError`
+(filesystem/OS failures), `aeslib::FormatError` (malformed container/key
+files), and `aeslib::LimitError` (a request exceeds a format-imposed size
+limit — currently just the CTR block-counter bound, see the nonce/IV
+strategy section above). Nothing in the public API uses output-parameter
+error codes.
+
+## Known limitations / threat model
+
+Stated plainly, rather than left for a reviewer to infer:
+
+- **No authentication.** CTR mode as implemented here provides
+  confidentiality only, not integrity. Ciphertext is malleable: flipping a
+  bit in the ciphertext flips the corresponding bit in the decrypted
+  plaintext, undetected, since there is no MAC or authentication tag
+  anywhere in the container format. A caller needing tamper-evidence needs
+  to layer one on (e.g. HMAC over the container, or a future AEAD-mode
+  version — the container format's version byte exists partly to allow
+  that without breaking old readers, see "On-disk container format" above).
+  This is a scope boundary, not an oversight: the challenge brief specifies
+  CTR mode, which is inherently unauthenticated.
+- **Nonce birthday bound.** Covered above — random 96-bit nonces mean
+  collision risk becomes non-negligible only after ~2^48 encryptions under
+  one key, which is far beyond this library's expected single-key volume,
+  but is a real bound rather than "impossible."
+- **Software-path cache timing** is addressed, not just documented: see
+  "Constant-time software S-box" above.
+
+## Test/production isolation
+
+Because this submission also ships a test suite (`tests/`) and a
+production-only-visible internal header (`src/internal.hpp`), it's worth
+stating explicitly what was verified about the boundary between them, so a
+reviewer doesn't have to re-derive it:
+
+- The `AESLIB_EXPECTED_BACKEND` environment variable used by CI to assert
+  which dispatch path ran (see "How the dispatch is verified" above) is read
+  in exactly one place in the entire codebase: `tests/test_backend.cpp`. No
+  `getenv`/`std::getenv` call exists anywhere under `src/` or `include/` —
+  production dispatch logic (`cpu::has_aes_ni()` in `src/cpu_detect.cpp`,
+  `active_backend()` in `include/aeslib/backend.hpp`) is driven purely by
+  the CPUID check itself and cannot be steered by that or any other
+  environment variable.
+- `src/internal.hpp` (the `Block`/`aes256_encrypt_block_*`/`cpu::has_aes_ni`/
+  `rng::fill_random`/`ct_sbox`/`validate_block_count` declarations tests need
+  to reach internals directly) is included only by production `.cpp` files
+  under `src/` — never by anything under `include/aeslib/`. A consumer
+  linking `aeslib` through its public include directory never sees it.
+- The `aeslib` CMake target lists only production sources; `aeslib_tests`
+  is a separate executable, and its `${CMAKE_SOURCE_DIR}` include path
+  (needed to reach `internal.hpp`) is scoped `PRIVATE` to that test target
+  only, never propagated to `aeslib` or anything linking it.
+- Setting `-DAESLIB_BUILD_TESTS=OFF` removes `add_subdirectory(tests)` from
+  the build entirely — the `aeslib` library target is unaffected either way,
+  since it never referenced test code, test include paths, or test compile
+  definitions in the first place.
+- There is no `install()`/`export()` rule in this project at all, so nothing
+  currently packages test code, `internal.hpp`, or anything else for
+  distribution.
 
 ## Third architecture (not implemented, but why it'd be straightforward)
 

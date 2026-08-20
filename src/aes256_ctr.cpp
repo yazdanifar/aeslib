@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "aeslib/backend.hpp"
+#include "aeslib/exceptions.hpp"
 #include "internal.hpp"
 
 namespace aeslib {
@@ -12,6 +13,12 @@ namespace {
 
 using detail::Block;
 using detail::kBlockSizeBytes;
+
+// The CTR construction's block counter is 32 bits (see make_counter_block
+// below), so a single call can address at most 2^32 blocks == 64 GiB before
+// the counter would wrap and start reusing keystream within that one call.
+constexpr std::uint64_t kMaxBlocks = std::uint64_t{1} << 32;
+constexpr std::uint64_t kMaxPlaintextBytes = kMaxBlocks * kBlockSizeBytes;
 
 Block encrypt_block(const SecretKey& key, const Block& block) {
     // Decided once per call via the runtime CPUID check in cpu_detect.cpp —
@@ -58,7 +65,14 @@ std::array<std::byte, kNonceSizeBytes> generate_nonce() {
 
 } // namespace
 
+void detail::validate_block_count(std::size_t plaintext_len) {
+    if (static_cast<std::uint64_t>(plaintext_len) > kMaxPlaintextBytes) {
+        throw LimitError("plaintext exceeds the 64 GiB limit addressable by this CTR construction's 32-bit block counter");
+    }
+}
+
 Container Aes256Ctr::encrypt(const SecretKey& key, const std::vector<std::byte>& plaintext) {
+    detail::validate_block_count(plaintext.size());
     const auto nonce = generate_nonce();
     Container container;
     container.nonce = nonce;
@@ -67,6 +81,7 @@ Container Aes256Ctr::encrypt(const SecretKey& key, const std::vector<std::byte>&
 }
 
 std::vector<std::byte> Aes256Ctr::decrypt(const SecretKey& key, const Container& container) {
+    detail::validate_block_count(container.ciphertext.size());
     return apply_keystream(key, container.nonce, container.ciphertext);
 }
 

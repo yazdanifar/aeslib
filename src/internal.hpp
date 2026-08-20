@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 
 #include "aeslib/key.hpp"
 
@@ -17,10 +18,24 @@ using Block = std::array<std::byte, kBlockSizeBytes>;
 // never needs AES decryption, see aes256_ctr.hpp). Pure, portable C++.
 Block aes256_encrypt_block_soft(const SecretKey& key, const Block& block);
 
+// The software backend's constant-time GF(2^8)-inversion S-box (see
+// src/aes_core_soft.cpp). Exposed here purely so tests can check it against
+// the canonical AES S-box table for all 256 inputs; not part of the public
+// API.
+std::uint8_t ct_sbox(std::uint8_t x);
+
 // Same operation, implemented with AES-NI intrinsics. Only ever called after
 // cpu::has_aes_ni() has been confirmed true; must not be called otherwise
 // since the process may fault executing an unsupported instruction.
 Block aes256_encrypt_block_ni(const SecretKey& key, const Block& block);
+
+// Throws LimitError if `plaintext_len` needs more 16-byte blocks than the
+// CTR construction's 32-bit counter can address (see make_counter_block in
+// aes256_ctr.cpp) — beyond that, a single encrypt()/decrypt() call would
+// silently wrap the counter and reuse keystream within that call. Exposed
+// here (taking a size, not a buffer) so tests can exercise the boundary
+// without allocating a real ~64 GiB vector.
+void validate_block_count(std::size_t plaintext_len);
 
 } // namespace aeslib::detail
 
