@@ -1,185 +1,35 @@
-# Build directories and artifacts
+# CMake build trees. Covers the conventional `build/`, the sanitizer and
+# cross-compile trees this project's README and CI use (build-san,
+# build-aarch64), and CLion's default cmake-build-* directories.
 build/
 build-*/
-cmake-build-debug/
-cmake-build-release/
-cmake-build-relwithdebinfo/
-cmake-build-minsizerel/
 cmake-build-*/
+
+# CMake artifacts if someone configures in-source. Deliberately NOT a
+# blanket "*.cmake" rule — that would also hide tracked toolchain files
+# under cmake/ (e.g. cmake/aarch64-linux-gnu.cmake).
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
+CTestTestfile.cmake
+Testing/
 compile_commands.json
-Makefile
 
-# NOTE: deliberately not a blanket "*.cmake" rule — that would also hide
-# tracked toolchain files under cmake/ (e.g. cmake/aarch64-linux-gnu.cmake).
+# Output files produced by running the harness (see main.cpp).
+sample_plaintext.bin
+sample_ciphertext.aesc
+sample.key
 
-# Build outputs
-*.o
-*.a
-*.so
-*.dylib
-*.dll
-*.exe
-*.app/
-*.out
-*.dSYM/
+# Claude Code session state (permissions, task locks) — local tooling, not
+# part of the project.
+.claude/
 
-# JetBrains IDEs
+# Editors and IDEs
 .idea/
-*.iml
-*.iws
-*.ipr
-.DS_Store
-*.orig
-.gradle/
-.gradle
-gradle-app.setting
-!gradle-wrapper.jar
-
-# CLion / IntelliJ IDEA
-*.class
-.classpath
-.project
-.c9/
-*.launch
-.settings/
-*.sublime-workspace
-*.sublime-project
 .vscode/
-.vscode
-
-# macOS system files
-.DS_Store
-.AppleDouble
-.LSOverride
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-Desktop.ini
-$RECYCLE.BIN/
-
-# Editor temp files
-*~
-*.swp
-*.swo
-*.swn
-*#
-.*.swp
-.*.swo
-
-# vim
-[._]*.s[a-v][a-z]
-[._]*.sw[a-p]
-[._]s[a-v][a-z]
-[._]sw[a-p]
-.vim/
-*.vim
-
-# VS Code
-.vscode/
-*.code-workspace
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-.pytest_cache/
-.mypy_cache/
-.coverage
-
-# Dependencies
-node_modules/
-package-lock.json
-yarn.lock
-
-# Test outputs
-*.gcda
-*.gcno
-coverage/
-lcov.info
-
-# Local environment files
-.env
-.env.local
-.env.*.local
-
-# OS and system files
-.vscode/
-.DS_Store
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-$RECYCLE.BIN/
-
-# Temporary files
-*.tmp
-*.bak
 *.swp
 *~
-.#*
-.~*
 
-# Sample/Test files (but keep them in repo if they're important examples)
-# sample_plaintext.bin
-# sample.key
-# sample_ciphertext.aesc
-
-# Additional JetBrains metadata
-.jb_old_settings_store.xml
-vcs.xml
-*.shelf
-.idea_modules/
-
-# Eclipse
-.classpath
-.project
-.settings/
-.loadpath
-
-# Sublime Text
-*.sublime-workspace
-*.sublime-project
-
-# Backup files
-*.bak
-*.orig
-*.backup
-
-# Log files
-*.log
-logs/
-*.out
-
-# Generated files
-.#*
-
-# Mac
-.AppleDesktop
-Network Trash Folder
-Temporary Items
-.apdisk
+# macOS / Windows filesystem noise
+.DS_Store
+Thumbs.db

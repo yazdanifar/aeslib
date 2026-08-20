@@ -119,10 +119,26 @@ described above. No other Section 3 bonus objectives were attempted.
 
 ## AI tool usage disclosure
 
-This library, its documentation, and the accompanying design notes were
-written with the assistance of Claude (Anthropic), used as a pair-programmer
-for implementation, cross-checking the AES-256 key schedule/round
-transforms against FIPS-197, and drafting documentation. All code was
-reviewed and is understood by the author; the software AES-256
-implementation was independently validated against the official FIPS-197
-Appendix C.3 test vector as part of that review.
+Claude (Anthropic), via Claude Code, was used as a pair-programmer across
+this submission. Specifically:
+
+- **Library implementation** (`include/`, `src/`, `main.cpp`) — writing the
+  AES-256 key schedule and round transforms for both backends, the CTR
+  driver, the container format, and the CSPRNG/key-handling code, with the
+  key schedule cross-checked against FIPS-197 during review.
+- **Test suite** (`tests/`) — the hand-rolled assertion harness and all five
+  suites, including selecting the FIPS-197 Appendix C.3 vector as the
+  known-answer test and the `AESLIB_EXPECTED_BACKEND` mechanism used by CI
+  to assert which dispatch path a run took.
+- **CI workflow** (`.github/workflows/ci.yml`) — the job matrix, including
+  the QEMU `-cpu` approach for exercising both dispatch outcomes from a
+  single compiled binary. The premise that `qemu-x86_64 -cpu <model>`
+  controls the guest's `CPUID` output was empirically verified on GitHub's
+  runners before the workflow was written, rather than assumed.
+- **Documentation** — this README and DESIGN.md.
+
+All code was reviewed and is understood by the author. Both AES-256 backends
+are validated against the official FIPS-197 Appendix C.3 known-answer test
+on every CI run, and the documented limitations of the QEMU-based dispatch
+verification (see DESIGN.md) reflect deliberate scoping decisions rather
+than unexamined output.
