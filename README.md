@@ -92,8 +92,8 @@ container/key file format edge cases (bad magic, unsupported version,
 truncated/mismatched-length data), known-answer tests for the from-scratch
 SHA-256 (FIPS 180-4), HMAC-SHA256 (RFC 4231), and PBKDF2-HMAC-SHA256
 (RFC 7914) primitives plus passphrase-protected key file round-trip,
-wrong-passphrase, and tamper-detection tests (see DESIGN.md's "Safer key
-storage (bonus 3.4)"), a CI hook for asserting which dispatch path is
+wrong-passphrase, tamper-detection, and iteration-count-validation tests
+(see DESIGN.md's "Safer key storage (bonus 3.4)"), a CI hook for asserting which dispatch path is
 active (see `tests/test_backend.cpp` and the CI workflow below), and seven
 AES-256-CTR ciphertexts cross-checked against an independent implementation
 (Python's `cryptography` library, itself cross-verified against the
@@ -220,6 +220,34 @@ this submission. Specifically:
   primitives against the RFC/FIPS vectors, round-trip encryption/decryption,
   wrong-passphrase rejection, file-tampering detection, format validation,
   salt/nonce randomness.
+  A **third** review pass, focused specifically on `src/key_storage.cpp` and
+  its surrounding files, found and fixed two more issues: (1) the
+  PBKDF2-derived AES/HMAC subkeys and decrypted-key scratch buffers were
+  wiped via a manual `secure_wipe()` call placed before each `return`, which
+  several `throw` statements (on internal sanity-check failures, or a
+  propagated `Aes256Ctr::decrypt` failure) could skip — replaced with a
+  `detail::ScopedWipe` RAII guard that wipes on scope exit regardless of how
+  the function exits, alongside the existing manual calls for the
+  "wipe-as-soon-as-possible" property in the normal path; (2)
+  `load_from_file_encrypted` ran PBKDF2 using an iteration count read
+  directly from the file's own untrusted header, before the HMAC tag could
+  be checked (checking the tag requires the PBKDF2-derived MAC subkey) — a
+  corrupted or hostile file claiming a huge iteration count could force an
+  effectively unbounded computation ahead of any authentication check, and
+  `iterations == 0` was separately accepted on both save and load despite
+  silently collapsing PBKDF2 to one HMAC evaluation. Both are now validated
+  (`LimitError`/`FormatError`) before PBKDF2 runs.
+  A **fourth** pass cross-checked this fix against prior art via web search
+  and found the `age` encryption tool's own postmortem on the identical bug
+  shape in its scrypt recipient (github.com/FiloSottile/age/issues/417):
+  rejecting only `iterations == 0` isn't sufficient, since a hostile or
+  corrupted file could instead claim a small-but-nonzero count and get away
+  with negligible PBKDF2 stretching — the same "file header controls its own
+  KDF work factor" problem, just at the opposite (low) end from the DoS case
+  above. Both `save_to_file_encrypted` and `load_from_file_encrypted` now
+  enforce NIST SP 800-132's PBKDF2 floor (`kMinPbkdf2Iterations` = 1000)
+  instead of only a nonzero check. See DESIGN.md's "Safer key storage
+  (bonus 3.4)" for detail.
 - **Documentation** — this README and DESIGN.md (with updated Scope and feature descriptions).
 
 All code was reviewed and is understood by the author. Both AES-256 backends

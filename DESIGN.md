@@ -342,6 +342,48 @@ caveat still applies; and this is not hardware- or account-bound the way
 DPAPI or a TPM-sealed key would be — anyone with the passphrase can decrypt
 the file on any machine.
 
+**Hardening against a malicious/corrupted file.** A second review pass on
+this feature (after the first, which added the RFC/FIPS known-answer tests
+above) found gaps and fixed them. First, `iterations == 0` was silently
+accepted and collapses PBKDF2 to a single HMAC evaluation, defeating
+iteration stretching entirely; both `save_to_file_encrypted` and
+`load_from_file_encrypted` now reject it (`LimitError` on save,
+`FormatError` on load). Second, `load_from_file_encrypted` reads `iterations`
+straight from the file's own (untrusted, unauthenticated-until-verified)
+header and must run PBKDF2 with it *before* the HMAC tag can be checked —
+verifying the tag needs the MAC subkey, which only PBKDF2 produces. A
+corrupted or deliberately hostile file could therefore claim an enormous
+iteration count and force an effectively unbounded PBKDF2 computation before
+authentication ever gets a chance to reject it. `load_from_file_encrypted`
+now also rejects any iteration count above `kMaxPbkdf2Iterations`
+(50,000,000 — roughly 80x the 600,000 default, chosen high enough to never
+reject a legitimate file while still bounding worst-case load time to a
+handful of seconds). Third — found via a follow-up look at the `age`
+encryption tool's own postmortem on this exact class of bug
+([FiloSottile/age#417](https://github.com/FiloSottile/age/issues/417),
+concerning its scrypt recipient) — rejecting only `iterations == 0` wasn't
+enough: a corrupted or hostile file could instead claim a small-but-nonzero
+count (e.g. 1), which `load_from_file_encrypted` would accept and derive the
+MAC subkey with negligible stretching. That's not a live exposure for this
+project's own local-file usage, but it's the same shape of bug — a file's
+own header controlling its KDF work factor — that let age's scrypt
+recipient make an attacker's own passphrase guesses artificially cheap if
+anything ever offers a decrypt-with-passphrase oracle over such files. Both
+`save_to_file_encrypted` and `load_from_file_encrypted` now enforce a floor
+of `kMinPbkdf2Iterations` (1000, matching NIST SP 800-132's PBKDF2 minimum,
+which this section already cited but the code didn't previously enforce).
+This is now stated as part of the threat model: loading an untrusted file
+bounds the caller's exposure to a bad iteration count in either direction,
+in addition to the HMAC tag eventually catching the tampering itself. The
+PBKDF2-derived scratch buffers (`derived`, `mac_key_array`,
+`decrypted_bytes`) are also now wrapped in a `detail::ScopedWipe` RAII guard
+rather than relying solely on a manual `secure_wipe()` call before every
+return — the manual calls remain for the "wipe as soon as no longer needed"
+property in the normal path, but the RAII guard is a backstop that also
+covers exception paths (e.g. a thrown `IoError`/`FormatError`/
+`AuthenticationError` partway through), which the manual-only version did
+not.
+
 **A measured tradeoff, not a hidden one.** PBKDF2-HMAC-SHA256 at 600,000
 iterations is deliberately slow — that's the point, it's what makes
 brute-forcing the passphrase expensive. On this project's own hardware,

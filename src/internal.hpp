@@ -58,6 +58,24 @@ bool constant_time_equal(const std::byte* a, const std::byte* b, std::size_t len
 // elimination). Used for clearing sensitive buffers after use.
 void secure_wipe(std::byte* data, std::size_t len) noexcept;
 
+// Wipes [data, data+len) on scope exit, including via exception unwinding.
+// A backstop for scratch key-derivative buffers (e.g. PBKDF2 output) where a
+// manual secure_wipe() call for the "wipe as soon as no longer needed"
+// property could otherwise be skipped by an early throw or return.
+class ScopedWipe {
+public:
+    ScopedWipe(std::byte* data, std::size_t len) noexcept : data_(data), len_(len) {}
+    ~ScopedWipe() { secure_wipe(data_, len_); }
+    ScopedWipe(const ScopedWipe&) = delete;
+    ScopedWipe& operator=(const ScopedWipe&) = delete;
+    ScopedWipe(ScopedWipe&&) = delete;
+    ScopedWipe& operator=(ScopedWipe&&) = delete;
+
+private:
+    std::byte* data_;
+    std::size_t len_;
+};
+
 } // namespace aeslib::detail
 
 namespace aeslib::cpu {

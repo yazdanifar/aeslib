@@ -12,6 +12,7 @@
 namespace {
 using aeslib::AuthenticationError;
 using aeslib::FormatError;
+using aeslib::LimitError;
 using aeslib::SecretKey;
 using aeslib::read_file;
 using aeslib::write_file;
@@ -97,7 +98,7 @@ AESLIB_TEST(key_storage, pbkdf2_hmac_sha256_rfc7914_c80000) {
 AESLIB_TEST(key_storage, save_load_encrypted_round_trip) {
     const SecretKey original = SecretKey::generate();
     const auto path = std::filesystem::temp_directory_path() / "aeslib_test_encrypted.key";
-    constexpr std::uint32_t fast_iterations = 100;
+    constexpr std::uint32_t fast_iterations = 1000; // kMinPbkdf2Iterations
     original.save_to_file_encrypted(path, "mypassphrase", fast_iterations);
     const SecretKey loaded = SecretKey::load_from_file_encrypted(path, "mypassphrase");
     std::filesystem::remove(path);
@@ -178,6 +179,70 @@ AESLIB_TEST(key_storage, load_encrypted_truncated) {
     const auto path = std::filesystem::temp_directory_path() / "aeslib_test_enc_truncated.key";
     std::vector<std::byte> truncated(50); // Too short.
     write_file(path, truncated);
+    CHECK_THROWS(SecretKey::load_from_file_encrypted(path, "passphrase"), FormatError);
+    std::filesystem::remove(path);
+}
+
+// Zero iterations passed to save_to_file_encrypted is rejected: it would
+// silently collapse PBKDF2 to a single HMAC evaluation.
+AESLIB_TEST(key_storage, save_encrypted_rejects_zero_iterations) {
+    const SecretKey key = SecretKey::generate();
+    const auto path = std::filesystem::temp_directory_path() / "aeslib_test_enc_zero_iters.key";
+    CHECK_THROWS(key.save_to_file_encrypted(path, "mypassphrase", 0), LimitError);
+}
+
+// A nonzero but below-NIST-SP-800-132's-floor (1000) iteration count is
+// rejected too: 0 isn't the only way to defeat iteration stretching.
+AESLIB_TEST(key_storage, save_encrypted_rejects_below_minimum_iterations) {
+    const SecretKey key = SecretKey::generate();
+    const auto path = std::filesystem::temp_directory_path() / "aeslib_test_enc_low_iters.key";
+    CHECK_THROWS(key.save_to_file_encrypted(path, "mypassphrase", 999), LimitError);
+}
+
+// Writes a syntactically valid (magic/version/size) but otherwise
+// hand-crafted wrapped-key file with a specific iteration count, for testing
+// load_from_file_encrypted's iteration-count validation independent of a
+// real save.
+std::vector<std::byte> make_wrapped_key_file_with_iterations(std::uint32_t iterations) {
+    std::vector<std::byte> data(101);
+    data[0] = std::byte{'A'};
+    data[1] = std::byte{'E'};
+    data[2] = std::byte{'S'};
+    data[3] = std::byte{'W'};
+    data[4] = std::byte{1}; // version
+    // bytes 5..20 salt, 25..100 nonce/ciphertext/tag: left zeroed, since
+    // iteration validation happens before any of that is used.
+    data[21] = static_cast<std::byte>(iterations);
+    data[22] = static_cast<std::byte>(iterations >> 8);
+    data[23] = static_cast<std::byte>(iterations >> 16);
+    data[24] = static_cast<std::byte>(iterations >> 24);
+    return data;
+}
+
+// A file claiming zero iterations throws FormatError.
+AESLIB_TEST(key_storage, load_encrypted_rejects_zero_iterations) {
+    const auto path = std::filesystem::temp_directory_path() / "aeslib_test_enc_zero_iters_load.key";
+    write_file(path, make_wrapped_key_file_with_iterations(0));
+    CHECK_THROWS(SecretKey::load_from_file_encrypted(path, "passphrase"), FormatError);
+    std::filesystem::remove(path);
+}
+
+// A file claiming a small but nonzero iteration count (e.g. 1) — which
+// would let an attacker who controls the file make brute-forcing the
+// passphrase against it artificially cheap — also throws FormatError.
+AESLIB_TEST(key_storage, load_encrypted_rejects_below_minimum_iterations) {
+    const auto path = std::filesystem::temp_directory_path() / "aeslib_test_enc_low_iters_load.key";
+    write_file(path, make_wrapped_key_file_with_iterations(1));
+    CHECK_THROWS(SecretKey::load_from_file_encrypted(path, "passphrase"), FormatError);
+    std::filesystem::remove(path);
+}
+
+// A file claiming an unreasonably large iteration count throws FormatError
+// (and, implicitly, this test completing at all proves PBKDF2 is never run
+// with that count — the bound is checked before deriving anything).
+AESLIB_TEST(key_storage, load_encrypted_rejects_excessive_iterations) {
+    const auto path = std::filesystem::temp_directory_path() / "aeslib_test_enc_excessive_iters_load.key";
+    write_file(path, make_wrapped_key_file_with_iterations(0xFFFFFFFFu));
     CHECK_THROWS(SecretKey::load_from_file_encrypted(path, "passphrase"), FormatError);
     std::filesystem::remove(path);
 }
