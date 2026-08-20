@@ -74,12 +74,31 @@ jobs:
       - name: Run harness under qemu -cpu Nehalem
         run: qemu-x86_64-static -cpu Nehalem aes_harness
 
-  # Cross-compiles for aarch64 once and uploads the binaries, so the two
-  # qemu-aarch64-crypto-on/off jobs below can run the exact same compiled
-  # binary under two different emulated CPU models — the aarch64 mirror of
-  # the linux-x86_64 -> qemu-aes-on/off pattern above, now that bonus 3.2
-  # (ARM AArch64 Crypto Extensions) is implemented (src/aes_core_arm.cpp).
-  linux-aarch64-cross-build:
+  # Cross-compiles for aarch64 and runs the result under qemu-aarch64 -cpu
+  # max, asserting (via AESLIB_EXPECTED_BACKEND, see tests/test_backend.cpp)
+  # that active_backend() reports Hardware and that src/aes_core_arm.cpp's
+  # real implementation produces correct output under emulation.
+  #
+  # Unlike the amd64 qemu-aes-on/qemu-aes-off pair above, there is no
+  # matching "-off" leg here: QEMU's built-in aarch64 CPU models (cortex-a57,
+  # cortex-a72, etc.) all report the AArch64 Crypto Extensions as present —
+  # verified empirically (an earlier version of this job used
+  # `-cpu cortex-a57` expecting Software and it failed, reporting Hardware
+  # instead) and consistent with QEMU's own model definitions, which encode
+  # id_aa64isar0 = 0x00011120 (AES+PMULL present) for cortex-a57. This
+  # reflects reality: unlike x86-64's AES-NI (optional and genuinely absent
+  # on plenty of real deployed CPUs, which is why Nehalem-era QEMU models
+  # exist and matter), the AArch64 Crypto Extensions have been close to
+  # universal on real silicon since the Cortex-A53/A57 generation, so QEMU
+  # doesn't ship a "realistic modern core without it" model to point
+  # -cpu at. The software path on arm64 is still proven correct without a
+  # dedicated emulated leg: it's the exact same portable expand_key/round-
+  # transform code already exercised extensively by the amd64 software-path
+  # legs (qemu-aes-off, native x86_64) — arm64 doesn't get a separate
+  # implementation — and cpu_detect.cpp's arm64 detection branches are
+  # simple, directly-readable capability checks, same as the amd64 case's
+  # "closed by code simplicity, not by execution" argument in DESIGN.md.
+  qemu-aarch64:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -91,61 +110,12 @@ jobs:
         run: cmake -B build-aarch64 -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-linux-gnu.cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo
       - name: Build
         run: cmake --build build-aarch64 -j
-      - uses: actions/upload-artifact@v5
-        with:
-          name: linux-aarch64-binaries
-          path: |
-            build-aarch64/tests/aeslib_tests
-            build-aarch64/aes_harness
-
-  # Runs the SAME cross-compiled binary under qemu-aarch64 with a CPU model
-  # that advertises AArch64 Crypto Extensions (-cpu max enables everything
-  # QEMU's TCG supports, including AES/PMULL), asserting (via
-  # AESLIB_EXPECTED_BACKEND, see tests/test_backend.cpp) that active_backend()
-  # reports Hardware and that src/aes_core_arm.cpp's real implementation
-  # produces correct output under emulation.
-  qemu-aarch64-crypto-on:
-    needs: linux-aarch64-cross-build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v5
-        with:
-          name: linux-aarch64-binaries
-      - name: Install qemu-user-static and aarch64 sysroot
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static g++-aarch64-linux-gnu
-      - run: chmod +x tests/aeslib_tests aes_harness
-      - name: Run tests under qemu-aarch64 -cpu max (crypto extensions present)
+      - name: Run tests under qemu-aarch64 -cpu max
         env:
           AESLIB_EXPECTED_BACKEND: hardware
-        run: qemu-aarch64-static -cpu max -L /usr/aarch64-linux-gnu tests/aeslib_tests
+        run: qemu-aarch64-static -cpu max -L /usr/aarch64-linux-gnu build-aarch64/tests/aeslib_tests
       - name: Run harness under qemu-aarch64 -cpu max
-        run: qemu-aarch64-static -cpu max -L /usr/aarch64-linux-gnu aes_harness
-
-  # Same binary again, this time under a CPU model with no AArch64 Crypto
-  # Extensions (cortex-a57 predates them) — asserts active_backend() reports
-  # Software. Together with qemu-aarch64-crypto-on, this is brief 2.2's
-  # dispatch requirement made testable for ARM, mirroring qemu-aes-on/off
-  # for x86_64 above. Same caveat as qemu-aes-off: QEMU's TCG may still
-  # execute AESE/AESMC even with the feature bit masked off, so this proves
-  # detection correctly reports the extension as absent and that the
-  # software path it falls back to is correct — not that dispatch would
-  # SIGILL-safely on real hardware lacking the extension.
-  qemu-aarch64-crypto-off:
-    needs: linux-aarch64-cross-build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v5
-        with:
-          name: linux-aarch64-binaries
-      - name: Install qemu-user-static and aarch64 sysroot
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static g++-aarch64-linux-gnu
-      - run: chmod +x tests/aeslib_tests aes_harness
-      - name: Run tests under qemu-aarch64 -cpu cortex-a57 (no crypto extensions)
-        env:
-          AESLIB_EXPECTED_BACKEND: software
-        run: qemu-aarch64-static -cpu cortex-a57 -L /usr/aarch64-linux-gnu tests/aeslib_tests
-      - name: Run harness under qemu-aarch64 -cpu cortex-a57
-        run: qemu-aarch64-static -cpu cortex-a57 -L /usr/aarch64-linux-gnu aes_harness
+        run: qemu-aarch64-static -cpu max -L /usr/aarch64-linux-gnu build-aarch64/aes_harness
 
   # Two genuine, non-emulated ARM64 machines — the real-hardware complement
   # to the QEMU legs above (which prove dispatch/correctness under emulation

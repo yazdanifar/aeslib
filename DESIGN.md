@@ -95,14 +95,25 @@ acceleration and one without. This is verified on every push by
    var — one test binary, one build, two CPU identities, two different
    correct outcomes. This is brief 2.2's requirement made literal rather
    than approximated by building twice.
-3. `linux-aarch64-cross-build` cross-compiles for a genuinely different
-   architecture and uploads that binary; `qemu-aarch64-crypto-on`/
-   `qemu-aarch64-crypto-off` run it under `qemu-aarch64-static -cpu max`
-   (Crypto Extensions present) and `-cpu cortex-a57` (absent) respectively —
-   the same same-binary-two-CPU-identities pattern as `qemu-aes-on`/`-off`,
-   now exercising `aes_core_arm.cpp`'s real implementation under emulation
-   rather than the throwing stub the pre-bonus-3.2 version of this codebase
-   compiled but never called.
+3. `qemu-aarch64` cross-compiles for a genuinely different architecture and
+   runs the result under `qemu-aarch64-static -cpu max`, exercising
+   `aes_core_arm.cpp`'s real implementation under emulation rather than the
+   throwing stub the pre-bonus-3.2 version of this codebase compiled but
+   never called. Unlike the amd64 pair above, there's no matching "-off"
+   leg: every QEMU-modeled aarch64 CPU (`cortex-a57` included — checked
+   directly, expecting `Software` and getting `Hardware` instead before this
+   job was simplified to just `-cpu max`) reports the Crypto Extensions as
+   present, because unlike AES-NI, they've been close to universal on real
+   ARMv8-A silicon since the Cortex-A53/A57 generation; QEMU's built-in
+   models reflect that reality rather than offering a "modern core without
+   it" option the way Nehalem does for x86-64. The software path on arm64 is
+   still proven correct without a dedicated no-crypto emulated leg, since
+   it's the exact same portable `expand_key`/round-transform code already
+   exercised by the amd64 software-path legs — arm64 never gets its own
+   separate software implementation — and `cpu_detect.cpp`'s arm64
+   detection branches are simple, directly-readable capability checks, same
+   as this section's own "closed by code simplicity, not by execution"
+   argument below.
 4. `macos-arm64` (`macos-14`, real Apple Silicon) and `linux-arm64-native`
    (`ubuntu-24.04-arm`, a real Arm-hosted Linux runner) build and test
    natively — no cross toolchain, no emulation — on two different genuine
@@ -120,11 +131,10 @@ verified directly against GitHub's runners: probing with `-cpu Westmere`,
 `yes`/`yes`/`yes`/`no` respectively, exactly as expected.
 
 **Limitation worth stating plainly:** QEMU's TCG will generally still
-*execute* an `aesenc` (or `AESE`/`AESMC`, on the aarch64 legs) instruction
-even when the CPUID/HWCAP feature bit is masked off — real silicon would
-`SIGILL`. So `qemu-aes-off`/`qemu-aarch64-crypto-off` prove that (a)
+*execute* an `aesenc` instruction even when the CPUID feature bit is masked
+off — real silicon would `SIGILL`. So `qemu-aes-off` proves that (a)
 detection correctly reports hardware AES as absent under that model, and (b)
-the software path each falls back to is byte-correct — they do not prove
+the software path it falls back to is byte-correct — it does not prove
 that dispatch would crash safely-versus-silently-corrupt if the hardware
 branch were ever taken on real hardware genuinely lacking the extension by
 mistake. That gap is closed by the dispatch logic itself (a handful of `#if`
@@ -344,8 +354,9 @@ can't be confused):
 explicitly. Both were rejected on portability/testability grounds specific
 to this project: DPAPI is Windows-only and user/machine-bound, with no
 Linux equivalent to exercise the same code path in this project's existing
-6-way CI matrix (native Linux/Windows, ASan/UBSan, `qemu-aarch64`, and two
-`qemu-x86_64` legs with different `-cpu` models); `libsecret` needs a
+CI matrix (native Linux/Windows/macOS, ASan/UBSan, `qemu-aarch64`, two
+native ARM64 runners, and two `qemu-x86_64` legs with different `-cpu`
+models); `libsecret` needs a
 running D-Bus session and keyring daemon, which isn't reliably present in
 a headless CI runner. A passphrase+KDF wrapping scheme has no such
 dependency — it's exercised identically on every platform this project

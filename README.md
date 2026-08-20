@@ -125,18 +125,18 @@ ctest --test-dir build-san --output-on-failure
 
 `.github/workflows/ci.yml` runs on every push/PR: native build+test on
 Linux (GCC) and Windows (MSVC), an ASan+UBSan build, and — the interesting
-part — the *same compiled binary* run twice under QEMU with two different
-emulated CPU models, once for x86_64 (`qemu-aes-on`/`qemu-aes-off`, one
-model with AES-NI and one without) and once for a cross-compiled aarch64
-binary (`qemu-aarch64-crypto-on`/`qemu-aarch64-crypto-off`, one model with
-AArch64 Crypto Extensions and one without). That directly exercises brief
-2.2's requirement that a single binary pick the correct path on two
-different machines, rather than relying on it having only ever been built
-and run on one. Two more jobs (`macos-arm64` on real Apple Silicon,
+part — the *same compiled x86_64 binary* run twice under `qemu-x86_64` with
+two different emulated CPU models, one advertising AES-NI and one without
+(`qemu-aes-on`/`qemu-aes-off`). A cross-compiled aarch64 build is run under
+`qemu-aarch64 -cpu max` to exercise the ARM Crypto Extensions backend under
+emulation (there's no matching "no crypto" leg for aarch64 — see DESIGN.md
+for why). Two more jobs (`macos-arm64` on real Apple Silicon,
 `linux-arm64-native` on a GitHub-hosted Arm Linux runner) build and test
-natively on genuine ARM64 hardware, complementing the emulated legs. See
-DESIGN.md's "How the dispatch is verified" section for how this was
-validated and its limitations.
+natively on genuine ARM64 hardware, complementing the emulated legs. That
+directly exercises brief 2.2's requirement that a single binary pick the
+correct path on two different machines, rather than relying on it having
+only ever been built and run on one. See DESIGN.md's "How the dispatch is
+verified" section for how this was validated and its limitations.
 
 ## Scope
 
@@ -169,11 +169,14 @@ build targets (via `_hw`, not the AES-NI functions directly), so they
 validate ARM for free on ARM hardware; a new
 `expand_key_matches_fips197_appendix_a3` test checks the shared schedule
 directly against FIPS-197's published AES-256 key expansion; CI runs the
-cross-compiled aarch64 binary under QEMU with crypto extensions toggled on
-and off (`qemu-aarch64-crypto-on`/`-off`, mirroring the existing amd64 jobs),
-plus two native ARM64 jobs (`macos-arm64` on Apple Silicon,
-`linux-arm64-native` on a GitHub-hosted Arm Linux runner) confirming the
-real hardware path on two different real chips.
+cross-compiled aarch64 binary under `qemu-aarch64 -cpu max`, plus two native
+ARM64 jobs (`macos-arm64` on Apple Silicon, `linux-arm64-native` on a
+GitHub-hosted Arm Linux runner) confirming the real hardware path on two
+different real chips. Unlike x86-64, there's no QEMU-aarch64 "no crypto"
+leg — every QEMU-modeled aarch64 CPU reports the extension present, since
+real ARMv8-A silicon has shipped with it almost universally since the
+Cortex-A53/A57 generation, so QEMU doesn't offer a realistic "modern core
+without it" model the way it does for AES-NI's Nehalem; see DESIGN.md.
 
 **Bonus 3.4 — Safer key storage**: `SecretKey::save_to_file_encrypted(path,
 passphrase, iterations)` and `load_from_file_encrypted(path, passphrase)`
