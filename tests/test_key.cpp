@@ -26,6 +26,13 @@ AESLIB_TEST(key, save_load_round_trip) {
     CHECK(loaded.bytes() == original.bytes());
 }
 
+AESLIB_TEST(key, move_from_wipes_source) {
+    SecretKey original = SecretKey::generate();
+    const SecretKey moved = std::move(original);
+    (void)moved;
+    for (const std::byte b : original.bytes()) CHECK(b == std::byte{0});
+}
+
 AESLIB_TEST(key, load_missing_file_throws_io_error) {
     const auto path = std::filesystem::temp_directory_path() / "aeslib_test_missing.key";
     CHECK_THROWS(SecretKey::load_from_file(path), IoError);

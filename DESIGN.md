@@ -230,16 +230,70 @@ branch on the version byte before interpreting the rest of the layout.
 
 ## Key handling
 
-`SecretKey` is move-only (copying is disabled at the type level, so a key
-can't be accidentally duplicated) and zeroes its backing buffer on
-destruction and on move-from. The wipe loop uses a `volatile` reference to
-prevent the compiler from treating it as a dead store and optimizing it
-away, since the buffer's contents in memory aren't otherwise observed
-again. This is a minimal hygiene step, not the full "keep raw key
-material out of general-purpose memory" bonus objective (no `mlock`,
-no OS keystore integration, no KDF-wrapped storage) — those are called out
-in the challenge brief as separate, optional bonus work this submission
-doesn't attempt.
+`SecretKey` is move-only — copying is disabled at the type level, so a key
+can't be accidentally duplicated by value — and every consumer in this
+codebase (`aes256_ctr.cpp`, both AES backends) takes it by `const&`, so no
+incidental copies of the raw key exist anywhere in the library.
+
+### Minimizing key exposure in memory (bonus 3.6)
+
+Three techniques are used together, addressing both the raw key and its
+most sensitive derivative:
+
+- **Wipe on destruction/move.** `SecretKey::wipe()` zeroes the backing
+  buffer via a `volatile` reference loop, not a plain `std::fill`/`= {}` —
+  a non-`volatile` zero write immediately before the buffer goes out of
+  scope is exactly the kind of "dead store" an optimizer is entitled to
+  delete, since nothing else observably reads the memory again. `volatile`
+  forces the write to actually happen.
+- **Swap protection.** The constructor `mlock()`s (POSIX) or
+  `VirtualLock()`s (Windows) the key's backing pages so they're pinned in
+  RAM and excluded from swap/pagefile for as long as the `SecretKey` is
+  alive; `wipe()` calls the matching `munlock()`/`VirtualUnlock()` right
+  after zeroing, since that's exactly the point at which the memory stops
+  holding a live key. The move constructor/assignment re-lock the
+  (relocated) destination and unlock the vacated source, so a moved-from
+  `SecretKey` never keeps its old storage pinned. The return value of
+  `mlock`/`VirtualLock` is deliberately ignored — `mlock` can fail without
+  `CAP_IPC_LOCK` or a sufficient `RLIMIT_MEMLOCK` (the default in many
+  containers), and this feature is defense-in-depth layered on top of the
+  wipe/non-copy guarantees, not something key generation should hard-fail
+  over on a host where the memlock limit happens to be tight. Verified
+  directly: running the harness under `ulimit -l 0` still succeeds.
+- **Wiping the derived key schedule, not just the key.** Both AES
+  backends expand the raw key into a full round-key schedule
+  (`expand_key`/`expand_key_ni`) — 240 bytes of `Word`s in the software
+  path, 15 `__m128i` round keys in the AES-NI path — and this expansion
+  runs once *per 16-byte block*, since CTR mode calls the block cipher
+  once per keystream block. The schedule is a direct, reversible function
+  of the raw key and is exactly as sensitive, and because it's
+  recomputed continuously during encryption/decryption rather than once
+  per key lifetime, it spends far more aggregate time sitting unwiped in
+  stack memory than the key itself ever does — a gap a wipe-only-the-key
+  approach would miss entirely. Both
+  `aes256_encrypt_block_soft`/`aes256_encrypt_block_ni` zero their local
+  `schedule` array (same `volatile`-write technique as `SecretKey::wipe()`,
+  applied byte-wise since `Word`/`__m128i` aren't safely `volatile`-loopable
+  element-wise) immediately after the last round that consumes it.
+
+**Threat model.** This protects against: key or schedule bytes surviving,
+readable, past their logical lifetime in a stack/heap dump taken *after*
+the owning object/stack frame is gone; key material being written to
+swap/the pagefile while a `SecretKey` is alive; and accidental duplication
+via the API surface. It explicitly does **not** protect against: inspecting
+a still-*live* process (an attached debugger, `ptrace`, or a core dump
+taken *while* a `SecretKey` or a round-key schedule is still in scope — the
+raw bytes are, by necessity, resident as ordinary unencrypted memory while
+actually being used for encryption; avoiding that entirely is the "far end
+of the spectrum" the brief calls out — e.g. hardware enclaves, an HSM, or
+never materializing the key outside a keystore process — and isn't
+attempted here); an attacker with root/kernel privileges; `mlock`/
+`VirtualLock` failing silently on a host with a tight memlock limit (an
+accepted, stated tradeoff, not a bug); whole-system hibernate-to-disk on
+OSes/configurations where that can bypass `mlock`; or side channels beyond
+what the constant-time software S-box (above) already addresses. Safer key
+*storage* (OS keystore, KDF-wrapped keys) is a separate, optional bonus
+objective (3.4) this submission doesn't attempt.
 
 ## Randomness
 

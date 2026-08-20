@@ -6,8 +6,11 @@
 #include "aeslib/exceptions.hpp"
 #include "internal.hpp"
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #endif
 
@@ -17,18 +20,24 @@ namespace {
 constexpr std::uint8_t kKeyFileVersion = 1;
 }
 
+SecretKey::SecretKey() { lock_memory(); }
+
 SecretKey SecretKey::generate() {
     SecretKey key;
     rng::fill_random(key.bytes_.data(), key.bytes_.size());
     return key;
 }
 
-SecretKey::SecretKey(SecretKey&& other) noexcept : bytes_(other.bytes_) { other.wipe(); }
+SecretKey::SecretKey(SecretKey&& other) noexcept : bytes_(other.bytes_) {
+    lock_memory();
+    other.wipe();
+}
 
 SecretKey& SecretKey::operator=(SecretKey&& other) noexcept {
     if (this != &other) {
         wipe();
         bytes_ = other.bytes_;
+        lock_memory();
         other.wipe();
     }
     return *this;
@@ -40,6 +49,23 @@ void SecretKey::wipe() noexcept {
     // A plain loop can be optimized away by the compiler as a "dead store"
     // since bytes_ is about to go out of scope; volatile prevents that.
     for (volatile std::byte& b : bytes_) b = std::byte{0};
+    unlock_memory();
+}
+
+void SecretKey::lock_memory() noexcept {
+#if defined(_WIN32)
+    ::VirtualLock(bytes_.data(), static_cast<SIZE_T>(bytes_.size()));
+#else
+    ::mlock(bytes_.data(), bytes_.size());
+#endif
+}
+
+void SecretKey::unlock_memory() noexcept {
+#if defined(_WIN32)
+    ::VirtualUnlock(bytes_.data(), static_cast<SIZE_T>(bytes_.size()));
+#else
+    ::munlock(bytes_.data(), bytes_.size());
+#endif
 }
 
 void SecretKey::save_to_file(const std::filesystem::path& path) const {

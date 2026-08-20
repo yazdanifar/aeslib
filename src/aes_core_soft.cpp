@@ -141,6 +141,17 @@ void shift_rows(std::array<std::uint8_t, 16>& state) {
     }
 }
 
+// The round-key schedule is a direct, reversible function of the raw key —
+// just as sensitive as the key itself, and recomputed on every block (CTR
+// calls this once per 16 bytes of keystream), so it's wiped the same way
+// SecretKey::wipe() wipes the key: a volatile byte-level loop so the
+// compiler can't drop it as a dead store right before the array goes out of
+// scope.
+void wipe_schedule(std::array<Word, kScheduleWords>& schedule) noexcept {
+    auto* bytes = reinterpret_cast<volatile std::uint8_t*>(schedule.data());
+    for (std::size_t i = 0; i < sizeof(Word) * kScheduleWords; ++i) bytes[i] = 0;
+}
+
 void mix_columns(std::array<std::uint8_t, 16>& state) {
     for (int c = 0; c < 4; ++c) {
         std::uint8_t a0 = state[c * 4 + 0], a1 = state[c * 4 + 1], a2 = state[c * 4 + 2], a3 = state[c * 4 + 3];
@@ -154,7 +165,7 @@ void mix_columns(std::array<std::uint8_t, 16>& state) {
 } // namespace
 
 Block aes256_encrypt_block_soft(const SecretKey& key, const Block& block) {
-    const auto schedule = expand_key(key);
+    auto schedule = expand_key(key);
 
     std::array<std::uint8_t, 16> state{};
     for (int i = 0; i < 16; ++i) state[i] = static_cast<std::uint8_t>(block[i]);
@@ -169,6 +180,7 @@ Block aes256_encrypt_block_soft(const SecretKey& key, const Block& block) {
     sub_bytes(state);
     shift_rows(state);
     add_round_key(state, schedule, kNr);
+    wipe_schedule(schedule);
 
     Block out{};
     for (int i = 0; i < 16; ++i) out[i] = static_cast<std::byte>(state[i]);

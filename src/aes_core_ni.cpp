@@ -93,10 +93,21 @@ std::array<__m128i, kNumRoundKeys> expand_key_ni(const SecretKey& key) {
     return schedule;
 }
 
+// Same rationale as aes_core_soft.cpp's wipe_schedule(): the round-key
+// schedule is a direct, reversible function of the raw key and is
+// recomputed on every block, so it's zeroed the same volatile-write way
+// SecretKey::wipe() zeroes the key itself. __m128i isn't a type `volatile`
+// can portably apply to element-wise, so this drops to a volatile byte view
+// over the array instead.
+void wipe_schedule(std::array<__m128i, kNumRoundKeys>& schedule) noexcept {
+    auto* bytes = reinterpret_cast<volatile unsigned char*>(schedule.data());
+    for (std::size_t i = 0; i < sizeof(__m128i) * kNumRoundKeys; ++i) bytes[i] = 0;
+}
+
 } // namespace
 
 Block aes256_encrypt_block_ni(const SecretKey& key, const Block& block) {
-    const auto schedule = expand_key_ni(key);
+    auto schedule = expand_key_ni(key);
 
     __m128i state = _mm_loadu_si128(reinterpret_cast<const __m128i*>(block.data()));
     state = _mm_xor_si128(state, schedule[0]);
@@ -104,6 +115,7 @@ Block aes256_encrypt_block_ni(const SecretKey& key, const Block& block) {
         state = _mm_aesenc_si128(state, schedule[static_cast<std::size_t>(round)]);
     }
     state = _mm_aesenclast_si128(state, schedule[kNumRoundKeys - 1]);
+    wipe_schedule(schedule);
 
     Block out{};
     _mm_storeu_si128(reinterpret_cast<__m128i*>(out.data()), state);

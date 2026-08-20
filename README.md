@@ -118,12 +118,15 @@ verified" section for how this was validated and its limitations.
 
 ## Scope
 
-This submission implements the challenge's core requirements plus the
-unit-test bonus objective (3.1): AES-256-CTR, runtime AES-NI/software
-dispatch on amd64, `std::vector<std::byte>` APIs with file load/store, a
-documented versioned container format with key/ciphertext stored
-separately, a CMake build, the `main.cpp` harness, and the CTest suite
-described above. No other Section 3 bonus objectives were attempted.
+This submission implements the challenge's core requirements plus two
+Section 3 bonus objectives: the unit-test suite (3.1) described above, and
+minimizing key exposure in memory (3.6) — `SecretKey` locks its backing
+pages against swap (`mlock`/`VirtualLock`) for as long as it's alive on top
+of its existing wipe-on-destruction/move behavior, and both AES backends
+now also wipe their derived round-key schedule after each block, not just
+the raw key. See DESIGN.md's "Minimizing key exposure in memory" section
+for the full writeup and stated threat model. No other Section 3 bonus
+objectives were attempted.
 
 ## AI tool usage disclosure
 
@@ -150,6 +153,13 @@ this submission. Specifically:
   Python's `cryptography` library and independently cross-checked against
   the `openssl enc -aes-256-ctr` CLI before being hardcoded as expected
   values, rather than generated and trusted from a single source.
+- **Key-exposure hardening (bonus 3.6)** — a further follow-up pass adding
+  `mlock`/`VirtualLock` swap protection to `SecretKey`, and wiping the
+  derived round-key schedule (not just the raw key) in both AES backends
+  after each block. Verified by running the test harness under `ulimit -l
+  0` to confirm the memlock-failure path doesn't break key generation, and
+  by a clean ASan/UBSan run to catch any issue in the new byte-level
+  `volatile` writes over `__m128i` storage.
 - **Documentation** — this README and DESIGN.md.
 
 All code was reviewed and is understood by the author. Both AES-256 backends

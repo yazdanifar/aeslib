@@ -36,8 +36,16 @@ public:
     const std::array<std::byte, kKeySizeBytes>& bytes() const { return bytes_; }
 
 private:
-    SecretKey() = default;
+    SecretKey();
     void wipe() noexcept;
+    // Best-effort: pins/unpins the key's backing pages against being paged
+    // to swap/disk while the key is alive. Failures (e.g. RLIMIT_MEMLOCK on
+    // POSIX) are deliberately ignored rather than propagated — this is
+    // defense-in-depth on top of wipe()/non-copyability, not a hard
+    // requirement, and key generation must not start failing on hosts where
+    // the memlock limit is tight. See DESIGN.md's threat-model section.
+    void lock_memory() noexcept;
+    void unlock_memory() noexcept;
 
     std::array<std::byte, kKeySizeBytes> bytes_{};
 };
