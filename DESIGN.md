@@ -172,16 +172,27 @@ free-running 128-bit counter block with no separate nonce field, whereas this
 library splits that same 128 bits into a 96-bit random nonce and a 32-bit
 counter (the construction above). The published vectors therefore don't
 apply directly to this format. Correctness is anchored at three levels
-instead: the block-cipher layer, checked against the official FIPS-197
-Appendix C.3 AES-256 KAT plus a second NIST SP 800-38A F.1.5 ECB vector in
-`tests/test_aes_core.cpp`; CTR-level round-trip and keystream-consistency
-tests in `tests/test_ctr.cpp`; and — filling the gap the missing published
-CTR vectors leave — `tests/test_reference_vectors.cpp`, which hardcodes
-AES-256-CTR ciphertexts for this exact nonce||counter construction computed
-independently via Python's `cryptography` library and cross-checked against
-the `openssl enc -aes-256-ctr` CLI (both credible, widely-used
-implementations, neither of which is this codebase). That file documents
-exactly how each vector was generated so it can be reproduced or extended.
+instead: the block-cipher layer, checked in `tests/test_aes_core.cpp`
+against four independent AES-256 ECB known-answer vectors (FIPS-197
+Appendix C.3, NIST SP 800-38A F.1.5, and two NIST CAVP all-zero/all-ones
+edge cases — the latter pair exercises GF(2^8) arithmetic's identity and
+max-value corners, which the two "normal" vectors don't touch), plus an
+exhaustive check of `ct_sbox()` against the textbook S-box table for all 256
+byte values; CTR-level tests in `tests/test_ctr.cpp` covering round-trips,
+nonce freshness, wrong-key decryption, correct counter increment across
+multiple blocks, the counter-overflow guard at and beyond its exact
+boundary, and CTR's expected bit-flip malleability (flipping one ciphertext
+bit flips exactly the corresponding plaintext bit — demonstrating *why* the
+"no authentication" limitation below is real, not theoretical); and —
+filling the gap the missing published CTR vectors leave —
+`tests/test_reference_vectors.cpp`, which hardcodes seven AES-256-CTR
+ciphertexts for this exact nonce||counter construction (single-block,
+multi-block, a partial final block, all-zero and all-ones key/nonce/data,
+and single-byte input) computed independently via Python's `cryptography`
+library and cross-checked against the `openssl enc -aes-256-ctr` CLI (both
+credible, widely-used implementations, neither of which is this codebase).
+That file documents exactly how each vector was generated so it can be
+reproduced or extended.
 
 The 32-bit counter caps a single message at 2^32 blocks (64 GiB) before the
 counter would wrap and start reusing keystream within that one message; not a
