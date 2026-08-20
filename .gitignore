@@ -1,0 +1,182 @@
+# Build directories and artifacts
+build/
+cmake-build-debug/
+cmake-build-release/
+cmake-build-relwithdebinfo/
+cmake-build-minsizerel/
+cmake-build-*/
+*.cmake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+Makefile
+
+# Build outputs
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.app/
+*.out
+*.dSYM/
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.iws
+*.ipr
+.DS_Store
+*.orig
+.gradle/
+.gradle
+gradle-app.setting
+!gradle-wrapper.jar
+
+# CLion / IntelliJ IDEA
+*.class
+.classpath
+.project
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+*.sublime-project
+.vscode/
+.vscode
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Editor temp files
+*~
+*.swp
+*.swo
+*.swn
+*#
+.*.swp
+.*.swo
+
+# vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-v][a-z]
+[._]sw[a-p]
+.vim/
+*.vim
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.mypy_cache/
+.coverage
+
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# Test outputs
+*.gcda
+*.gcno
+coverage/
+lcov.info
+
+# Local environment files
+.env
+.env.local
+.env.*.local
+
+# OS and system files
+.vscode/
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+.#*
+.~*
+
+# Sample/Test files (but keep them in repo if they're important examples)
+# sample_plaintext.bin
+# sample.key
+# sample_ciphertext.aesc
+
+# Additional JetBrains metadata
+.jb_old_settings_store.xml
+vcs.xml
+*.shelf
+.idea_modules/
+
+# Eclipse
+.classpath
+.project
+.settings/
+.loadpath
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# Backup files
+*.bak
+*.orig
+*.backup
+
+# Log files
+*.log
+logs/
+*.out
+
+# Generated files
+.#*
+
+# Mac
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
