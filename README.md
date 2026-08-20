@@ -78,8 +78,8 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-Six suites are registered (`aeslib.aes_core`, `aeslib.ctr`,
-`aeslib.container`, `aeslib.key`, `aeslib.backend`,
+Seven suites are registered (`aeslib.aes_core`, `aeslib.ctr`,
+`aeslib.container`, `aeslib.key`, `aeslib.key_storage`, `aeslib.backend`,
 `aeslib.reference_vectors`), covering: four independent AES-256 known-answer
 tests (FIPS-197 Appendix C.3, NIST SP 800-38A F.1.5, and two NIST CAVP
 all-zero/all-ones edge cases) against both backends, an exhaustive check of
@@ -89,12 +89,16 @@ range of sizes (including partial-final-block cases), correct counter
 increment across multiple blocks, a boundary test for the 32-bit
 block-counter guard, CTR's expected bit-flip malleability, nonce freshness,
 container/key file format edge cases (bad magic, unsupported version,
-truncated/mismatched-length data), a CI hook for asserting which dispatch
-path is active (see `tests/test_backend.cpp` and the CI workflow below), and
-seven AES-256-CTR ciphertexts cross-checked against an independent
-implementation (Python's `cryptography` library, itself cross-verified
-against the `openssl` CLI — see `tests/test_reference_vectors.cpp`). Disable
-with `-DAESLIB_BUILD_TESTS=OFF` if you only want the library and harness.
+truncated/mismatched-length data), known-answer tests for the from-scratch
+SHA-256 (FIPS 180-4), HMAC-SHA256 (RFC 4231), and PBKDF2-HMAC-SHA256
+(RFC 7914) primitives plus passphrase-protected key file round-trip,
+wrong-passphrase, and tamper-detection tests (see DESIGN.md's "Safer key
+storage (bonus 3.4)"), a CI hook for asserting which dispatch path is
+active (see `tests/test_backend.cpp` and the CI workflow below), and seven
+AES-256-CTR ciphertexts cross-checked against an independent implementation
+(Python's `cryptography` library, itself cross-verified against the
+`openssl` CLI — see `tests/test_reference_vectors.cpp`). Disable with
+`-DAESLIB_BUILD_TESTS=OFF` if you only want the library and harness.
 
 For a sanitizer build (brief 2.9 — "we will look at this with sanitizers"):
 
@@ -144,9 +148,11 @@ block. See DESIGN.md for threat model (protects against offline key theft,
 tampering detection via HMAC, precomputation via random salt; does *not*
 protect against weak passphrases, keyloggers, or live attacker on machine).
 
-Test coverage: Seven suites now include `aeslib.key_storage` (round-trip
-encryption/decryption, wrong-passphrase rejection, file-tampering detection,
-format validation, salt/nonce randomness).
+Test coverage: Seven suites now include `aeslib.key_storage` (known-answer
+tests for SHA-256/HMAC-SHA256/PBKDF2-HMAC-SHA256 against FIPS 180-4/RFC
+4231/RFC 7914 reference vectors, round-trip encryption/decryption,
+wrong-passphrase rejection, file-tampering detection, format validation,
+salt/nonce randomness).
 
 ## AI tool usage disclosure
 
@@ -194,12 +200,26 @@ this submission. Specifically:
   research against OWASP, NIST SP 800-132, RFC 8018, RFC 2104, FIPS 180-4,
   FIPS 198-1, age specification, and OpenSSH bcrypt_pbkdf documentation.
   Implemented from-scratch: SHA-256 per FIPS 180-4, HMAC-SHA256 per RFC 2104,
-  PBKDF2 per RFC 8018 (OWASP-recommended 600,000 iterations), constant-time
-  byte comparison, and secure memory wiper. Encrypted key file uses 101-byte
-  fixed format with magic "AESW", random 128-bit salt, PBKDF2-derived AES
-  and HMAC subkeys, AES-256-CTR-wrapped key, and HMAC-SHA256 tag (verify-before-
-  decrypt). Test coverage: round-trip encryption/decryption, wrong-passphrase
-  rejection, file-tampering detection, format validation, salt/nonce randomness.
+  PBKDF2 per RFC 8018 (OWASP-recommended 600,000 iterations, while noting
+  OWASP itself ranks PBKDF2 below Argon2id/scrypt/bcrypt — chosen here for
+  implementation simplicity given this project's no-external-dependencies
+  constraint, a disclosed tradeoff), constant-time byte comparison, and
+  secure memory wiper. Encrypted key file uses 101-byte fixed format with
+  magic "AESW", random 128-bit salt, PBKDF2-derived AES and HMAC subkeys,
+  AES-256-CTR-wrapped key, and HMAC-SHA256 tag (verify-before-decrypt).
+  A follow-up independent review pass fetched the RFC 4231/FIPS 180-4/RFC
+  7914 reference vectors directly and cross-checked the implementation
+  against them (rather than relying on the round-trip tests alone, which
+  can't catch an internally self-consistent but wrong primitive since save
+  and load call the same function), catching and fixing two things this
+  process surfaced: a silent-truncation footgun in `hmac_sha256`'s
+  internal buffer sizing for oversized inputs, and its use of a stack
+  buffer sized for arbitrary-length data even in PBKDF2's inner loop where
+  the data is always exactly 32 bytes — both replaced with buffers sized to
+  the actual input. Test coverage: known-answer tests for all three
+  primitives against the RFC/FIPS vectors, round-trip encryption/decryption,
+  wrong-passphrase rejection, file-tampering detection, format validation,
+  salt/nonce randomness.
 - **Documentation** — this README and DESIGN.md (with updated Scope and feature descriptions).
 
 All code was reviewed and is understood by the author. Both AES-256 backends

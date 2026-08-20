@@ -235,6 +235,152 @@ can't be accidentally duplicated by value — and every consumer in this
 codebase (`aes256_ctr.cpp`, both AES backends) takes it by `const&`, so no
 incidental copies of the raw key exist anywhere in the library.
 
+### Safer key storage (bonus 3.4)
+
+`SecretKey::save_to_file_encrypted(path, passphrase, iterations)` /
+`SecretKey::load_from_file_encrypted(path, passphrase)` wrap the raw key
+under a passphrase-derived key before it ever touches disk, instead of the
+plain-bytes `save_to_file()`/`load_from_file()` path.
+
+**Wire format** (`src/key_storage.cpp`, fixed 101 bytes, magic `"AESW"`,
+distinct from the ciphertext container's own format so the two file types
+can't be confused):
+
+| offset | size | field |
+| --- | --- | --- |
+| 0 | 4 | magic `"AESW"` |
+| 4 | 1 | version (`1`) |
+| 5 | 16 | salt (random, 128-bit) |
+| 21 | 4 | PBKDF2 iteration count (uint32 LE) |
+| 25 | 12 | AES-256-CTR nonce for the wrap |
+| 37 | 32 | wrapped key ciphertext |
+| 69 | 32 | HMAC-SHA256 tag over bytes `[0, 69)` |
+
+**Why PBKDF2-HMAC-SHA256 over an OS keystore.** Windows DPAPI and Linux
+`libsecret`/keyring were considered first, since the brief calls them out
+explicitly. Both were rejected on portability/testability grounds specific
+to this project: DPAPI is Windows-only and user/machine-bound, with no
+Linux equivalent to exercise the same code path in this project's existing
+6-way CI matrix (native Linux/Windows, ASan/UBSan, `qemu-aarch64`, and two
+`qemu-x86_64` legs with different `-cpu` models); `libsecret` needs a
+running D-Bus session and keyring daemon, which isn't reliably present in
+a headless CI runner. A passphrase+KDF wrapping scheme has no such
+dependency — it's exercised identically on every platform this project
+already tests on. This is the same shape as
+[age's scrypt recipient](https://c2sp.org/age@v1.1.0) and OpenSSH's
+`bcrypt_pbkdf`-wrapped private keys, both cross-checked while designing
+this.
+
+**Why PBKDF2-HMAC-SHA256 over Argon2id/scrypt.** OWASP's
+[Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
+ranks Argon2id first, then scrypt, then bcrypt, and lists PBKDF2 last — "the
+preferred algorithm when [FIPS-140 compliance is] required" — so this is
+not the highest-security choice on the table. It was chosen anyway because
+this project has zero external dependencies (confirmed: no `FetchContent`/
+`find_package` anywhere in `CMakeLists.txt`) and hand-rolls its own
+primitives (AES-256, CSPRNG) rather than vendoring a crypto library.
+Argon2id and scrypt are memory-hard constructions — meaningfully more code
+and attack surface to implement from scratch correctly than PBKDF2-HMAC-SHA256,
+which reduces to a simple, well-analyzed HMAC feedback loop
+([RFC 8018](https://datatracker.ietf.org/doc/html/rfc8018) §5.2) that's
+easy to validate against known-answer tests. OWASP's own number for
+PBKDF2-HMAC-SHA256 (600,000 iterations) is used as the default
+(`kDefaultPbkdf2Iterations`), and NIST SP 800-132's floor (≥1000
+iterations, ≥128-bit salt) is also met (this design uses a 128-bit salt).
+This is a disclosed implementation-simplicity tradeoff, not a claim that
+PBKDF2 is the strongest available option.
+
+**Why encrypt-then-MAC.** This project's AES-256-CTR is unauthenticated by
+design (see "Known limitations" below) — CTR ciphertext is bit-flip
+malleable, so wrapping the raw key with CTR alone would let a
+corrupted or tampered key file silently decrypt to 32 bytes of garbage
+with no signal at all. Per the
+[Encrypt-then-MAC](https://www.daemonology.net/blog/2009-06-24-encrypt-then-mac.html)
+principle, an HMAC-SHA256 tag is computed over the plaintext structure
+(magic through wrapped ciphertext) and verified *before* decryption
+(`load_from_file_encrypted` checks the tag first, throws
+`AuthenticationError` on mismatch, and only calls `Aes256Ctr::decrypt` if it
+matches) — this also avoids feeding attacker-controlled ciphertext into the
+decrypt path at all when the tag doesn't verify.
+
+**Key separation.** PBKDF2 derives 64 bytes from `(passphrase, salt,
+iterations)`; the first 32 bytes become the AES-256-CTR wrapping subkey, the
+next 32 the HMAC-SHA256 subkey. The two operations never share key
+material, so a weakness in one primitive's use of its key can't be
+leveraged against the other.
+
+**Constant-time tag comparison.** `detail::constant_time_equal` XORs and
+accumulates every byte rather than returning on the first mismatch,
+specifically to avoid a timing side channel on MAC verification — a
+`memcmp`/early-exit comparison here is a known, real vulnerability class
+(non-constant-time MAC comparison enabling a timing oracle that leaks the
+tag byte-by-byte, letting an attacker forge or brute-force a valid tag
+without knowing the passphrase). No such helper previously existed in this
+codebase; it was added specifically for this feature and is also usable
+for other tag-verification needs in the future.
+
+**Threat model.** This protects against: an attacker who obtains the key
+file at rest without the passphrase (they get 101 bytes of salt + nonce +
+ciphertext + tag, and PBKDF2's iteration count is the only thing between
+them and a brute-force passphrase search); tampering with or corruption of
+the key file (the HMAC tag catches any single-bit change, structural or
+not); and rainbow-table-style precomputation across multiple key files
+(each save generates a fresh random salt, so precomputed tables keyed on a
+common passphrase-to-derived-key mapping don't transfer between files). It
+explicitly does **not** protect against: a weak or guessable passphrase
+(PBKDF2 slows brute force, it doesn't fix a bad passphrase); the passphrase
+itself being captured via a keylogger, shoulder-surfing, or a compromised
+input path; a GPU/ASIC-equipped attacker, against whom PBKDF2's lack of
+memory-hardness makes it weaker than Argon2id/scrypt at the same wall-clock
+cost (the tradeoff stated above); a live attacker with access to the
+process while the key is resident in memory — this is the same caveat
+bonus 3.6 (below) already states, and `save_to_file_encrypted`/
+`load_from_file_encrypted` build on the same `SecretKey` type, so they
+inherit its `mlock`/wipe-on-destruction protections for the derived
+subkeys and intermediate buffers, but the underlying exposure-while-in-use
+caveat still applies; and this is not hardware- or account-bound the way
+DPAPI or a TPM-sealed key would be — anyone with the passphrase can decrypt
+the file on any machine.
+
+**A measured tradeoff, not a hidden one.** PBKDF2-HMAC-SHA256 at 600,000
+iterations is deliberately slow — that's the point, it's what makes
+brute-forcing the passphrase expensive. On this project's own hardware,
+`save_to_file_encrypted()` at the default iteration count takes on the
+order of ~1 second in an optimized build, and measurably longer (multiple
+seconds) under ASan/UBSan or emulation, since this is a from-scratch,
+non-vectorized, scalar SHA-256 implementation computing on the order of a
+million HMAC-SHA256 calls per derivation. `iterations` is an explicit,
+overridable parameter for callers (e.g. tests) who need a faster derivation
+and can accept a smaller security margin; production callers should keep
+the default.
+
+This section's design decisions were informed by:
+
+- **[OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)**:
+  the source for the 600,000-iteration PBKDF2-HMAC-SHA256 default, and for
+  the explicit acknowledgment that OWASP ranks PBKDF2 below
+  Argon2id/scrypt/bcrypt.
+- **[NIST SP 800-132](https://csrc.nist.gov/pubs/sp/800/132/final)**: the
+  ≥1000-iteration, ≥128-bit-salt floor this design meets.
+- **[RFC 8018](https://datatracker.ietf.org/doc/html/rfc8018)**: PBKDF2's
+  construction (§5.2), implemented directly against the spec.
+- **[RFC 2104](https://www.rfc-editor.org/rfc/rfc2104) / FIPS 198-1**: HMAC's
+  construction; **FIPS 180-4**: SHA-256's constants and compression
+  function — both implemented from scratch, and checked against
+  [RFC 4231](https://www.rfc-editor.org/rfc/rfc4231.html)'s HMAC-SHA256 test
+  vectors and [RFC 7914](https://datatracker.ietf.org/doc/html/rfc7914.html)
+  Appendix A's PBKDF2-HMAC-SHA256 test vectors in
+  `tests/test_key_storage.cpp` (not just round-trip tests against itself —
+  a save/load round trip calling the same primitive on both ends can't
+  catch an internally self-consistent but wrong implementation; only
+  comparison against an independent reference can).
+- **[age's scrypt recipient](https://c2sp.org/age@v1.1.0)** and OpenSSH's
+  `bcrypt_pbkdf`-wrapped keys: the reference shape for "passphrase + KDF +
+  symmetric wrap + fresh salt per file" that this format follows.
+- **[Encrypt-then-MAC](https://www.daemonology.net/blog/2009-06-24-encrypt-then-mac.html)**:
+  the rationale for authenticating the wrapped key rather than leaving it
+  as bare unauthenticated CTR ciphertext.
+
 ### Key generation ergonomics (bonus 3.5)
 
 `SecretKey`'s API is designed so a caller has to work to misuse it, rather
@@ -409,8 +555,8 @@ process's* logical key lifetime, not what's electrically still in the DIMM
 after the machine loses power); whole-system hibernate-to-disk on
 OSes/configurations where that can bypass `mlock`; or side channels beyond
 what the constant-time software S-box (above) already addresses. Safer key
-*storage* (OS keystore, KDF-wrapped keys) is a separate, optional bonus
-objective (3.4) this submission doesn't attempt.
+*storage* (OS keystore, KDF-wrapped keys) is a separate bonus objective
+(3.4), covered above.
 
 This section's design decisions were informed by:
 
@@ -453,11 +599,15 @@ on Windows, `getrandom(2)` on Linux, `arc4random_buf` elsewhere) — never
 
 ## Error handling
 
-Three exception types cover this library's failure modes: `aeslib::IoError`
+Four exception types cover this library's failure modes: `aeslib::IoError`
 (filesystem/OS failures), `aeslib::FormatError` (malformed container/key
-files), and `aeslib::LimitError` (a request exceeds a format-imposed size
+files), `aeslib::LimitError` (a request exceeds a format-imposed size
 limit — currently just the CTR block-counter bound, see the nonce/IV
-strategy section above). Nothing in the public API uses output-parameter
+strategy section above), and `aeslib::AuthenticationError` (a
+passphrase-protected key file's HMAC tag doesn't verify — wrong passphrase
+or tampered/corrupted file, see bonus 3.4 above; kept distinct from
+`FormatError` so callers can tell "ask for the passphrase again" apart from
+"file is unreadable"). Nothing in the public API uses output-parameter
 error codes.
 
 ## Known limitations / threat model

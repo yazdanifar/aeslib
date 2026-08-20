@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstring>
+#include <vector>
 
 #include "internal.hpp"
 
@@ -178,21 +179,28 @@ std::array<std::byte, 32> hmac_sha256(const std::byte* key, std::size_t key_len,
         opad[i] ^= static_cast<std::uint8_t>(key[i]);
     }
 
-    // Inner hash: SHA-256(ipad || data).
-    std::array<std::byte, block_size + 65536> inner_buf; // Enough for ipad + reasonable data.
-    // (In practice, data is typically small; if needed, process in chunks.)
-    if (len > inner_buf.size() - block_size) {
-        // Fallback: process in parts. For key derivation, data is small, so just fail gracefully.
-        // A production implementation would use streaming or a scratch buffer.
-        // For now, keep data small in PBKDF2 (passphrase + salt < 10KB).
-        std::memcpy(inner_buf.data(), ipad, block_size);
-        std::memcpy(&inner_buf[block_size], data, std::min(len, inner_buf.size() - block_size));
-        len = std::min(len, inner_buf.size() - block_size);
+    // Inner hash: SHA-256(ipad || data). PBKDF2's inner loop calls this
+    // ~iterations times with data that's always exactly 32 bytes (the
+    // previous HMAC output), so this stays on the stack for that common
+    // case (avoiding a heap allocation per call in a ~1.2M-call loop at the
+    // default 600,000 iterations) and only spills to the heap for inputs
+    // larger than that fixed bound — unlike a single large fixed buffer,
+    // this doesn't silently truncate oversized input.
+    constexpr std::size_t kInlineCap = 256;
+    std::array<std::byte, block_size + kInlineCap> inline_buf;
+    std::vector<std::byte> heap_buf;
+    std::byte* inner_data;
+    if (len <= kInlineCap) {
+        inner_data = inline_buf.data();
     } else {
-        std::memcpy(inner_buf.data(), ipad, block_size);
-        std::memcpy(&inner_buf[block_size], data, len);
+        heap_buf.resize(block_size + len);
+        inner_data = heap_buf.data();
     }
-    std::array<std::byte, 32> inner = sha256(inner_buf.data(), block_size + len);
+    std::memcpy(inner_data, ipad, block_size);
+    if (len > 0) {
+        std::memcpy(inner_data + block_size, data, len);
+    }
+    std::array<std::byte, 32> inner = sha256(inner_data, block_size + len);
 
     // Outer hash: SHA-256(opad || inner_hash).
     std::array<std::byte, block_size + 32> outer_buf;
@@ -216,11 +224,7 @@ std::array<std::byte, 64> pbkdf2_hmac_sha256(std::string_view passphrase, const 
 
     for (std::uint32_t block_idx = 1; block_idx <= 2; ++block_idx) {
         // U_1 = PRF(password, salt || block_count)
-        std::array<std::byte, 65536> u_input_buf; // salt + 4-byte block_idx
-        if (salt_len > u_input_buf.size() - 4) {
-            // Shouldn't happen in practice.
-            continue;
-        }
+        std::vector<std::byte> u_input_buf(salt_len + 4);
         std::memcpy(u_input_buf.data(), salt, salt_len);
         u_input_buf[salt_len] = static_cast<std::byte>(block_idx >> 24);
         u_input_buf[salt_len + 1] = static_cast<std::byte>(block_idx >> 16);
