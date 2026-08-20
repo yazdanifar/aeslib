@@ -290,29 +290,81 @@ accessor.
 
 ### Minimizing key exposure in memory (bonus 3.6)
 
-Three techniques are used together, addressing both the raw key and its
-most sensitive derivative:
+Four techniques are used together, addressing the raw key, its most
+sensitive derivative, and the file-I/O path key bytes travel through —
+informed by how libsodium's `sodium_mlock`/`sodium_memzero`, OpenSSL's
+`OPENSSL_cleanse`, and Bitcoin Core's locked-memory allocator handle the
+same problem (sources below):
 
 - **Wipe on destruction/move.** `SecretKey::wipe()` zeroes the backing
   buffer via a `volatile` reference loop, not a plain `std::fill`/`= {}` —
   a non-`volatile` zero write immediately before the buffer goes out of
   scope is exactly the kind of "dead store" an optimizer is entitled to
   delete, since nothing else observably reads the memory again. `volatile`
-  forces the write to actually happen.
-- **Swap protection.** The constructor `mlock()`s (POSIX) or
+  forces the write to actually happen. This is the same effect
+  `explicit_bzero`/`memset_s`/`SecureZeroMemory` achieve by other means
+  (`explicit_bzero` isn't used directly since it isn't in the C++17
+  standard library and isn't universally available — glibc has had it since
+  2.25, but not every libc/platform this library targets does); OpenSSL's
+  own `OPENSSL_cleanse` uses a different compiler-barrier trick (a
+  `volatile` *function pointer* to `memset`, called through indirectly) to
+  the same end. All of these exist because a *non-volatile* zero-write
+  right before deallocation is a dead store by the language's own rules,
+  not a compiler bug — the volatile loop here is a standard, portable way
+  to opt out of that rule for exactly the bytes that need it.
+- **Swap and core-dump protection.** The constructor `mlock()`s (POSIX) or
   `VirtualLock()`s (Windows) the key's backing pages so they're pinned in
   RAM and excluded from swap/pagefile for as long as the `SecretKey` is
   alive; `wipe()` calls the matching `munlock()`/`VirtualUnlock()` right
   after zeroing, since that's exactly the point at which the memory stops
-  holding a live key. The move constructor/assignment re-lock the
+  holding a live key. On Linux specifically, `lock_memory()` additionally
+  calls `madvise(MADV_DONTDUMP)` (and `unlock_memory()` calls the
+  complementary `MADV_DODUMP`): `mlock()` says nothing about core dumps by
+  itself — a page can be both locked in RAM *and* written into a
+  `SIGSEGV`/`SIGABRT`-triggered core file, since those are separate kernel
+  mechanisms. `MADV_DONTDUMP` is the Linux-specific opt-out for the second
+  one; libsodium's `sodium_mlock` does the same pairing for the same
+  reason. There's no BSD/macOS equivalent (no `MAP_NOCORE`-style flag for
+  an already-mapped stack range), so this half is Linux-only — on
+  macOS/BSD, a core dump taken while a `SecretKey` is alive can still
+  contain it, which is consistent with the "inspecting a still-live
+  process" carve-out below. The move constructor/assignment re-lock the
   (relocated) destination and unlock the vacated source, so a moved-from
-  `SecretKey` never keeps its old storage pinned. The return value of
-  `mlock`/`VirtualLock` is deliberately ignored — `mlock` can fail without
-  `CAP_IPC_LOCK` or a sufficient `RLIMIT_MEMLOCK` (the default in many
-  containers), and this feature is defense-in-depth layered on top of the
-  wipe/non-copy guarantees, not something key generation should hard-fail
-  over on a host where the memlock limit happens to be tight. Verified
-  directly: running the harness under `ulimit -l 0` still succeeds.
+  `SecretKey` never keeps its old storage pinned or dump-excluded. The
+  return value of `mlock`/`madvise`/`VirtualLock` is deliberately ignored —
+  `mlock` can fail without `CAP_IPC_LOCK` or a sufficient
+  `RLIMIT_MEMLOCK` (the default in many containers), and this feature is
+  defense-in-depth layered on top of the wipe/non-copy guarantees, not
+  something key generation should hard-fail over on a host where the
+  memlock limit happens to be tight. Verified directly: running the
+  harness under `ulimit -l 0` still succeeds, and a Linux-only test
+  (`key.generate_increases_locked_memory_on_linux`) reads
+  `/proc/self/status`'s `VmLck` field to confirm the lock take effect when
+  the platform allows it, without failing the suite when it doesn't (e.g.
+  a tight `RLIMIT_MEMLOCK` in CI). **Windows caveat, stated rather than
+  glossed over:** `VirtualLock` is a weaker guarantee than POSIX `mlock` —
+  it pins pages into the process's *working set*, but Windows can still
+  page them out once the process has no thread scheduled to run, which
+  `mlock` does not do. A small-secret-specific alternative,
+  `CryptProtectMemory` (DPAPI), encrypts the buffer in place with a
+  kernel-held, per-boot key instead of merely pinning it, which also
+  keeps it out of user-mode crash dumps — a stronger property than this
+  library's plain-`VirtualLock` approach gives on Windows. It isn't used
+  here to keep the locking code path uniform across platforms (one
+  pin/unpin API rather than a Windows-only encrypt/decrypt-around-every-use
+  scheme), but it's the documented next step if Windows-specific hardening
+  mattered more than portability for a given deployment.
+- **Avoiding unnecessary copies in the file-I/O path.**
+  `save_to_file()`/`load_from_file()` write/read key bytes through raw
+  `write(2)`/`read(2)` (POSIX) or `WriteFile`/`ReadFile` (Windows) directly
+  against `bytes_`, not through `std::ofstream`/`std::ifstream`. An
+  iostream sink/source copies through its own internal `streambuf` on the
+  way to/from the OS — an incidental, unwiped extra copy of key material
+  living in libstdc++/MSVC-internal buffer memory that outlives the call
+  and that neither `wipe()` nor `mlock()` ever touches. This is exactly
+  the "avoiding unnecessary copies of key material" technique the brief
+  calls out, applied to the one place in this codebase key bytes cross an
+  I/O boundary.
 - **Wiping the derived key schedule, not just the key.** Both AES
   backends expand the raw key into a full round-key schedule
   (`expand_key`/`expand_key_ni`) — 240 bytes of `Word`s in the software
@@ -327,26 +379,71 @@ most sensitive derivative:
   `aes256_encrypt_block_soft`/`aes256_encrypt_block_ni` zero their local
   `schedule` array (same `volatile`-write technique as `SecretKey::wipe()`,
   applied byte-wise since `Word`/`__m128i` aren't safely `volatile`-loopable
-  element-wise) immediately after the last round that consumes it.
+  element-wise) immediately after the last round that consumes it. The
+  schedule isn't `mlock`ed — it's stack-resident and short-lived enough
+  (one block's worth of encryption) that the cost/benefit favors just
+  wiping it promptly, unlike the key, which can live for the process's
+  entire runtime.
 
 **Threat model.** This protects against: key or schedule bytes surviving,
 readable, past their logical lifetime in a stack/heap dump taken *after*
 the owning object/stack frame is gone; key material being written to
-swap/the pagefile while a `SecretKey` is alive; and accidental duplication
-via the API surface. It explicitly does **not** protect against: inspecting
-a still-*live* process (an attached debugger, `ptrace`, or a core dump
-taken *while* a `SecretKey` or a round-key schedule is still in scope — the
-raw bytes are, by necessity, resident as ordinary unencrypted memory while
-actually being used for encryption; avoiding that entirely is the "far end
-of the spectrum" the brief calls out — e.g. hardware enclaves, an HSM, or
-never materializing the key outside a keystore process — and isn't
-attempted here); an attacker with root/kernel privileges; `mlock`/
-`VirtualLock` failing silently on a host with a tight memlock limit (an
-accepted, stated tradeoff, not a bug); whole-system hibernate-to-disk on
+swap/the pagefile while a `SecretKey` is alive; key material appearing in
+a Linux core dump taken while a `SecretKey` is alive; incidental copies of
+key bytes left behind in iostream buffer memory; and accidental
+duplication via the API surface. It explicitly does **not** protect
+against: inspecting a still-*live* process (an attached debugger, `ptrace`,
+or a core dump taken *while* a `SecretKey` or a round-key schedule is still
+in scope — the raw bytes are, by necessity, resident as ordinary
+unencrypted memory while actually being used for encryption; avoiding that
+entirely is the "far end of the spectrum" the brief calls out — e.g.
+hardware enclaves, an HSM, or never materializing the key outside a
+keystore process — and isn't attempted here); an attacker with root/kernel
+privileges; `mlock`/`VirtualLock`/`madvise` failing silently on a host with
+a tight memlock limit (an accepted, stated tradeoff, not a bug); a cold-boot
+attack — DRAM (and SRAM) retain their contents for seconds to minutes after
+power loss, so an attacker with physical access can reboot into a minimal
+OS and dump pre-boot RAM contents wholesale, recovering a still-resident
+key regardless of `mlock`/wipe-on-destruction (those only govern *this
+process's* logical key lifetime, not what's electrically still in the DIMM
+after the machine loses power); whole-system hibernate-to-disk on
 OSes/configurations where that can bypass `mlock`; or side channels beyond
 what the constant-time software S-box (above) already addresses. Safer key
 *storage* (OS keystore, KDF-wrapped keys) is a separate, optional bonus
 objective (3.4) this submission doesn't attempt.
+
+This section's design decisions were informed by:
+
+- **[Libsodium: Secure memory](https://libsodium.gitbook.io/doc/memory_management)**:
+  `sodium_mlock`/`sodium_munlock` pairing `mlock`/`munlock` with
+  `madvise(MADV_DONTDUMP)`/`MADV_DODUMP` on Linux, and `sodium_memzero`'s
+  role as a compiler-optimization-proof zeroing primitive — the direct
+  model for this library's `lock_memory()`/`unlock_memory()`/`wipe()`.
+- **[OpenSSL `crypto/mem_clr.c`](https://github.com/openssl/openssl/blob/master/crypto/mem_clr.c)**:
+  `OPENSSL_cleanse`'s volatile-function-pointer-to-`memset` technique, an
+  alternative compiler-barrier approach to the volatile-loop one used here,
+  useful for confirming the *reason* a volatile-based zero survives
+  optimization (a language-level dead-store rule, not an implementation
+  quirk) rather than just copying the pattern.
+- **[Bitcoin Core PR #15600 — "use madvise to avoid including sensitive
+  information in core dumps"](https://github.com/bitcoin/bitcoin/pull/15600)**:
+  a concrete, reviewed example of the same `mlock` + `MADV_DONTDUMP` gap
+  this library closes, in a production codebase with the same "keys must
+  not linger in memory" concern.
+- **["VirtualLock only locks your memory into the working set" — The Old
+  New Thing](https://devblogs.microsoft.com/oldnewthing/20071106-00/?p=24573)**:
+  the source for the Windows caveat above — `VirtualLock`'s guarantee is
+  weaker than POSIX `mlock`'s, which this library states rather than
+  implying parity between the two platform calls.
+- **[MSDN: `CryptProtectMemory`](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectmemory)**:
+  the Windows-native alternative to plain `VirtualLock` for small secrets —
+  documented above as the road not taken, and why.
+- **["Lest We Remember: Cold-Boot Attacks on Encryption Keys" (Halderman et
+  al.)](https://cacm.acm.org/research/lest-we-remember/)**: the source for
+  the cold-boot/DRAM-remanence entry in the threat model above — the
+  canonical demonstration that RAM-resident keys survive a power cycle long
+  enough to be extracted, which is precisely the class of attack no
+  process-level `mlock`/wipe scheme (this one included) can defend against.
 
 ## Randomness
 

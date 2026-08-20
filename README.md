@@ -124,12 +124,17 @@ generation ergonomics (3.5) — `SecretKey` has no public raw-byte accessor,
 so an external caller has no way to accidentally copy, log, or serialize
 key bytes; the only sanctioned way to get key material out is the explicit
 `save_to_file()` — and minimizing key exposure in memory (3.6) — `SecretKey`
-locks its backing pages against swap (`mlock`/`VirtualLock`) for as long as
-it's alive on top of its existing wipe-on-destruction/move behavior, and
-both AES backends now also wipe their derived round-key schedule after each
-block, not just the raw key. See DESIGN.md's "Key generation ergonomics"
-and "Minimizing key exposure in memory" sections for the full writeup and
-stated threat model. No other Section 3 bonus objectives were attempted.
+locks its backing pages against swap (`mlock`/`VirtualLock`, plus
+`madvise(MADV_DONTDUMP)` on Linux to also exclude them from core dumps) for
+as long as it's alive on top of its existing wipe-on-destruction/move
+behavior; its file I/O goes through raw `read`/`write`/`ReadFile`/`WriteFile`
+rather than iostreams, to avoid an unwiped copy of key bytes sitting in a
+streambuf; and both AES backends now also wipe their derived round-key
+schedule after each block, not just the raw key. See DESIGN.md's "Key
+generation ergonomics" and "Minimizing key exposure in memory" sections for
+the full writeup, sources consulted, and stated threat model (including
+what this does *not* protect against, e.g. cold-boot attacks and a live
+attached debugger). No other Section 3 bonus objectives were attempted.
 
 ## AI tool usage disclosure
 
@@ -170,7 +175,18 @@ this submission. Specifically:
   after each block. Verified by running the test harness under `ulimit -l
   0` to confirm the memlock-failure path doesn't break key generation, and
   by a clean ASan/UBSan run to catch any issue in the new byte-level
-  `volatile` writes over `__m128i` storage.
+  `volatile` writes over `__m128i` storage. A later research pass — reading
+  how libsodium, OpenSSL, and Bitcoin Core handle the same problem, plus
+  Microsoft's own documentation of `VirtualLock`'s weaker guarantee versus
+  POSIX `mlock`, and the cold-boot-attack literature — surfaced a real gap
+  (`mlock` alone doesn't exclude pages from Linux core dumps) and a real,
+  fixable copy (`std::ofstream`/`std::ifstream`'s internal streambuf when
+  saving/loading key files). Both were fixed: `madvise(MADV_DONTDUMP)` was
+  added alongside `mlock` on Linux, and `save_to_file()`/`load_from_file()`
+  now use raw `read`/`write`/`ReadFile`/`WriteFile` instead of iostreams.
+  DESIGN.md's threat-model paragraph was also expanded to state, rather than
+  omit, the cold-boot/DRAM-remanence attack and the Windows-specific
+  `VirtualLock` caveat.
 - **Documentation** — this README and DESIGN.md.
 
 All code was reviewed and is understood by the author. Both AES-256 backends

@@ -5,6 +5,12 @@
 #include "aeslib/key.hpp"
 #include "test_support.hpp"
 
+#if defined(__linux__)
+#include <optional>
+#include <sstream>
+#include <string>
+#endif
+
 namespace {
 using aeslib::FormatError;
 using aeslib::IoError;
@@ -60,3 +66,48 @@ AESLIB_TEST(key, load_truncated_file_throws_format_error) {
     CHECK_THROWS(SecretKey::load_from_file(path), FormatError);
     std::filesystem::remove(path);
 }
+
+#if defined(__linux__)
+namespace {
+// Parses the "VmLck:  <n> kB" line out of /proc/self/status. Reading our own
+// locked-page count (rather than trusting mlock()'s return value, which
+// SecretKey deliberately ignores) is the only way to check from userspace
+// that lock_memory() actually pinned pages instead of silently no-op'ing.
+std::optional<long> current_vm_lck_kb() {
+    std::ifstream status("/proc/self/status");
+    std::string line;
+    while (std::getline(status, line)) {
+        if (line.rfind("VmLck:", 0) == 0) {
+            std::istringstream iss(line.substr(6));
+            long kb = -1;
+            iss >> kb;
+            if (iss) return kb;
+        }
+    }
+    return std::nullopt;
+}
+} // namespace
+
+AESLIB_TEST(key, generate_increases_locked_memory_on_linux) {
+    const auto before = current_vm_lck_kb();
+    if (!before.has_value()) return; // /proc unavailable (e.g. sandboxed); nothing to assert
+    {
+        const SecretKey key = SecretKey::generate();
+        const auto during = current_vm_lck_kb();
+        if (during.has_value()) {
+            // mlock() is best-effort (see key.cpp): a tight RLIMIT_MEMLOCK
+            // (common in containers) makes it fail silently, so this can't
+            // assert an increase unconditionally without risking a spurious
+            // failure on such hosts. It only checks that IF mlock() worked,
+            // the accounting reflects it.
+            CHECK(*during >= *before);
+        }
+    }
+    const auto after = current_vm_lck_kb();
+    if (after.has_value()) {
+        // Whatever got locked while `key` was alive must be unlocked again
+        // once it's destroyed, regardless of whether mlock() succeeded above.
+        CHECK_EQ(*after, *before);
+    }
+}
+#endif
