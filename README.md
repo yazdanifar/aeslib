@@ -67,19 +67,55 @@ round-tripped plaintext matches the original. It prints which backend
 
 ## Unit tests
 
-Not included in this submission — the optional unit-test bonus objective
-from the challenge brief wasn't attempted. The software AES-256 core was
-validated during development against the FIPS-197 Appendix C.3 known-answer
-test vector, and the `main.cpp` harness exercises the full
-encrypt → store → load → decrypt round trip described above.
+A CTest-based suite lives under `tests/`, using a small hand-rolled
+assertion header (`tests/test_support.hpp`) rather than a third-party
+framework — this keeps the whole project, tests included, free of external
+dependencies. Build with tests enabled (the default) and run:
+
+```sh
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
+Five suites are registered (`aeslib.aes_core`, `aeslib.ctr`,
+`aeslib.container`, `aeslib.key`, `aeslib.backend`), covering the FIPS-197
+Appendix C.3 known-answer test against both backends, CTR round-trips at a
+range of sizes (including partial-final-block cases), nonce freshness,
+container/key file format edge cases (bad magic, unsupported version,
+truncated/mismatched-length data), and a CI hook for asserting which
+dispatch path is active (see `tests/test_backend.cpp` and the CI workflow
+below). Disable with `-DAESLIB_BUILD_TESTS=OFF` if you only want the
+library and harness.
+
+For a sanitizer build (brief 2.9 — "we will look at this with sanitizers"):
+
+```sh
+cmake -B build-san -DCMAKE_BUILD_TYPE=Debug -DAESLIB_ENABLE_SANITIZERS=ON
+cmake --build build-san -j
+ctest --test-dir build-san --output-on-failure
+```
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push/PR: native build+test on
+Linux (GCC) and Windows (MSVC), an ASan+UBSan build, a cross-compiled
+aarch64 build run under `qemu-aarch64`, and — the interesting one — the
+*same compiled x86_64 binary* run twice under `qemu-x86_64` with two
+different emulated CPU models, one advertising AES-NI and one without. That
+directly exercises brief 2.2's requirement that a single binary pick the
+correct path on two different machines, rather than relying on it having
+only ever been built and run on one. See DESIGN.md's "How the dispatch is
+verified" section for how this was validated and its limitations.
 
 ## Scope
 
-This submission implements the challenge's core requirements only (no
-Section 3 bonus objectives): AES-256-CTR, runtime AES-NI/software dispatch
-on amd64, `std::vector<std::byte>` APIs with file load/store, a documented
-versioned container format with key/ciphertext stored separately, a CMake
-build, and the `main.cpp` harness described above.
+This submission implements the challenge's core requirements plus the
+unit-test bonus objective (3.1): AES-256-CTR, runtime AES-NI/software
+dispatch on amd64, `std::vector<std::byte>` APIs with file load/store, a
+documented versioned container format with key/ciphertext stored
+separately, a CMake build, the `main.cpp` harness, and the CTest suite
+described above. No other Section 3 bonus objectives were attempted.
 
 ## AI tool usage disclosure
 
