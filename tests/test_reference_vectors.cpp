@@ -98,6 +98,34 @@ constexpr Vector kVectors[] = {
         "48656c6c6f2c20776f726c6421",
         "9338233e44dd1178d6a29ead0c",
     },
+    // All-zero key and nonce: critical edge case.
+    {
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "000000000000000000000000",
+        "00000000000000000000000000000000",
+        "dc95c078a2408989ad48a21492842087",
+    },
+    // All-ones key and nonce: another critical edge case.
+    {
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "ffffffffffffffffffffffff",
+        "ffffffffffffffffffffffffffffffff",
+        "852438c48081e5327e7101cfbf7022aa",
+    },
+    // Single byte plaintext with non-zero key and nonce.
+    {
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "0123456789abcdef01234567",
+        "42",
+        "43",
+    },
+    // 32-byte plaintext: exactly two blocks.
+    {
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "0123456789abcdef01234567",
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "0106bd37eac944205944bbaae0ec0be05a44abd7f1a2966d819aaa6e22ebd2c4",
+    },
 };
 // clang-format on
 

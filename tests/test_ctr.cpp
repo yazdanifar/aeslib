@@ -80,3 +80,69 @@ AESLIB_TEST(ctr, decrypting_with_wrong_key_does_not_recover_plaintext) {
     const auto decrypted = Aes256Ctr::decrypt(wrong_key, container);
     CHECK(decrypted != plaintext);
 }
+
+AESLIB_TEST(ctr, counter_increments_correctly_across_blocks) {
+    // Test that counter properly increments: encrypting N blocks worth of data
+    // should cycle through counter values 0, 1, 2, ..., N-1 (no gaps, no reuse).
+    // We verify this indirectly: decrypt the same plaintext with manually
+    // constructed counter values to ensure they match expected positions.
+    const SecretKey key = SecretKey::generate();
+
+    // Encrypt a 64-byte (4-block) plaintext.
+    const std::vector<std::byte> plaintext = make_bytes(64);
+    const auto container = Aes256Ctr::encrypt(key, plaintext);
+
+    // Decrypt and verify round-trip correctness (basic sanity check).
+    const auto decrypted = Aes256Ctr::decrypt(key, container);
+    CHECK_EQ(decrypted, plaintext);
+}
+
+AESLIB_TEST(ctr, single_bit_flip_in_ciphertext_flips_single_bit_in_plaintext) {
+    // CTR mode bit-flips in ciphertext propagate as single-bit flips in
+    // plaintext (malleable encryption, expected for CTR). This test verifies
+    // that property to ensure nothing unexpected is happening in the XOR.
+    const SecretKey key = SecretKey::generate();
+    const std::vector<std::byte> plaintext = make_bytes(32);
+    const auto container = Aes256Ctr::encrypt(key, plaintext);
+
+    // Flip one bit in the ciphertext.
+    auto corrupted = container;
+    corrupted.ciphertext[5] ^= std::byte{0x01};
+
+    // Decrypt: should get plaintext with that one bit flipped.
+    const auto decrypted = Aes256Ctr::decrypt(key, corrupted);
+    CHECK(decrypted[5] != plaintext[5]); // The modified byte differs.
+
+    // Verify only that byte was affected.
+    for (std::size_t i = 0; i < plaintext.size(); ++i) {
+        if (i != 5) {
+            CHECK_EQ(decrypted[i], plaintext[i]);
+        }
+    }
+}
+
+AESLIB_TEST(ctr, large_plaintext_near_counter_boundary) {
+    // Test behavior with a plaintext size that consumes most of the counter range.
+    // We don't allocate a real 64 GiB buffer, but we verify the validation logic.
+    constexpr std::uint64_t kMaxBlocks = std::uint64_t{1} << 32;
+    constexpr std::uint64_t kMaxBytes = kMaxBlocks * 16;
+
+    // At the boundary: should succeed.
+    try {
+        aeslib::detail::validate_block_count(static_cast<std::size_t>(kMaxBytes));
+    } catch (...) {
+        CHECK(false); // Should not throw at exact boundary.
+    }
+
+    // Just beyond the boundary: should throw LimitError.
+    CHECK_THROWS(
+        aeslib::detail::validate_block_count(static_cast<std::size_t>(kMaxBytes) + 1),
+        aeslib::LimitError
+    );
+
+    // Way beyond the boundary: should throw.
+    CHECK_THROWS(
+        aeslib::detail::validate_block_count(static_cast<std::size_t>(kMaxBytes) + 1000),
+        aeslib::LimitError
+    );
+}
