@@ -37,6 +37,27 @@ Block aes256_encrypt_block_ni(const SecretKey& key, const Block& block);
 // without allocating a real ~64 GiB vector.
 void validate_block_count(std::size_t plaintext_len);
 
+// SHA-256 per FIPS 180-4.
+std::array<std::byte, 32> sha256(const std::byte* data, std::size_t len);
+
+// HMAC-SHA256 per FIPS 198-1 / RFC 2104.
+std::array<std::byte, 32> hmac_sha256(const std::byte* key, std::size_t key_len,
+                                       const std::byte* data, std::size_t len);
+
+// PBKDF2-HMAC-SHA256 per RFC 8018, with fixed dkLen=64 bytes (32 for AES
+// wrapping subkey, 32 for HMAC subkey). Passphrase is a UTF-8 string.
+std::array<std::byte, 64> pbkdf2_hmac_sha256(std::string_view passphrase,
+                                              const std::byte* salt, std::size_t salt_len,
+                                              std::uint32_t iterations);
+
+// Constant-time byte array equality check (all bytes compared regardless of
+// early match, preventing timing-oracle attacks on MAC verification).
+bool constant_time_equal(const std::byte* a, const std::byte* b, std::size_t len) noexcept;
+
+// Wipe a memory region with volatile writes (prevents compiler dead-store
+// elimination). Used for clearing sensitive buffers after use.
+void secure_wipe(std::byte* data, std::size_t len) noexcept;
+
 } // namespace aeslib::detail
 
 namespace aeslib::cpu {

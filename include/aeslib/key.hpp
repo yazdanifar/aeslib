@@ -7,6 +7,7 @@
 namespace aeslib {
 
 inline constexpr std::size_t kKeySizeBytes = 32; // AES-256
+inline constexpr std::uint32_t kDefaultPbkdf2Iterations = 600'000; // OWASP recommendation
 
 class SecretKey;
 
@@ -48,6 +49,21 @@ public:
     // POSIX the file is created with 0600 permissions before any key bytes
     // are written.
     void save_to_file(const std::filesystem::path& path) const;
+
+    // Writes the key to a passphrase-protected file via PBKDF2-HMAC-SHA256
+    // key derivation, AES-256-CTR encryption, and HMAC-SHA256 authentication.
+    // File format is a fixed 101-byte structure: magic, version, salt (16 bytes),
+    // PBKDF2 iteration count, nonce, encrypted key, HMAC tag. See DESIGN.md.
+    // `iterations` defaults to 600,000 (OWASP recommendation for password hashing).
+    void save_to_file_encrypted(const std::filesystem::path& path, std::string_view passphrase,
+                                 std::uint32_t iterations = kDefaultPbkdf2Iterations) const;
+
+    // Loads a key previously written by save_to_file_encrypted(). Verifies the
+    // HMAC tag before decrypting. Throws AuthenticationError if the passphrase
+    // is wrong or the file has been tampered with; FormatError on structural
+    // parse failure; IoError on filesystem failures.
+    [[nodiscard]] static SecretKey load_from_file_encrypted(const std::filesystem::path& path,
+                                                             std::string_view passphrase);
 
 private:
     friend const std::array<std::byte, kKeySizeBytes>& detail::key_bytes(const SecretKey&) noexcept;

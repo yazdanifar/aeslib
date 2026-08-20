@@ -4,6 +4,7 @@ add_executable(aeslib_tests
   test_ctr.cpp
   test_container.cpp
   test_key.cpp
+  test_key_storage.cpp
   test_backend.cpp
   test_reference_vectors.cpp
 )
@@ -23,6 +24,6 @@ endif()
 # One add_test() per suite, all against the same binary (see test_main.cpp's
 # suite-name filtering) — this is what lets CTest report each suite
 # separately while keeping a single zero-dependency test executable.
-foreach(suite aes_core ctr container key backend reference_vectors)
+foreach(suite aes_core ctr container key key_storage backend reference_vectors)
   add_test(NAME aeslib.${suite} COMMAND aeslib_tests ${suite})
 endforeach()

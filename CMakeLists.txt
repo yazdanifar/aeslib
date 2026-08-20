@@ -16,6 +16,8 @@ add_library(aeslib STATIC
   src/cpu_detect.cpp
   src/csprng.cpp
   src/key.cpp
+  src/key_storage.cpp
+  src/sha256.cpp
   src/container.cpp
 )
 

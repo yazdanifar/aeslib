@@ -27,4 +27,14 @@ public:
     explicit LimitError(const std::string& message) : std::runtime_error(message) {}
 };
 
+// Thrown when a passphrase-protected key file's HMAC tag doesn't verify —
+// either the wrong passphrase was used to decrypt, or the file has been
+// corrupted/tampered with. Kept separate from FormatError (structural
+// parse failure) so callers can distinguish "ask for the passphrase again"
+// from "file is unreadable".
+class AuthenticationError : public std::runtime_error {
+public:
+    explicit AuthenticationError(const std::string& message) : std::runtime_error(message) {}
+};
+
 } // namespace aeslib
