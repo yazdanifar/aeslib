@@ -1,0 +1,33 @@
+name: qemu-cpuid-probe
+on: workflow_dispatch
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install qemu-user-static and g++
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static g++
+      - name: Build CPUID probe
+        run: |
+          cat > cpuid_probe.cpp << 'CPP'
+          #include <cstdio>
+          #include <cpuid.h>
+          int main(){
+            unsigned regs[4]={0,0,0,0};
+            __cpuid(1, regs[0],regs[1],regs[2],regs[3]);
+            bool aes = (regs[2] & (1<<25)) != 0;
+            std::printf("AES-NI: %s\n", aes?"yes":"no");
+            return 0;
+          }
+          CPP
+          g++ -std=c++17 -static cpuid_probe.cpp -o cpuid_probe
+      - name: Native (real runner CPU)
+        run: ./cpuid_probe
+      - name: qemu-x86_64 -cpu Westmere (expect yes)
+        run: qemu-x86_64-static -cpu Westmere ./cpuid_probe
+      - name: qemu-x86_64 -cpu Nehalem (expect no)
+        run: qemu-x86_64-static -cpu Nehalem ./cpuid_probe
+      - name: qemu-x86_64 -cpu max,-aes (expect no)
+        run: qemu-x86_64-static -cpu max,-aes ./cpuid_probe
+      - name: qemu-x86_64 -cpu max (expect yes)
+        run: qemu-x86_64-static -cpu max ./cpuid_probe
