@@ -32,6 +32,10 @@ dispatch mechanism, the on-disk container formats, and the nonce strategy.
 - `aeslib::active_backend()` — reports whether the hardware (AES-NI on
   amd64, ARM Crypto Extensions on arm64) or software AES path is in use on
   the current machine.
+- `include/aeslib/capi.h` / the `aeslib_c` shared library — a C-compatible
+  ABI (opaque handles, status codes, no exceptions crossing the boundary)
+  covering key generation, AES-256-CTR, and AES-GCM, for calling the
+  library from another language. See "Foreign-language interface" below.
 
 ## Build instructions
 
@@ -126,6 +130,43 @@ cmake --build build-san -j
 ctest --test-dir build-san --output-on-failure
 ```
 
+## Foreign-language interface
+
+`include/aeslib/capi.h` / `src/capi.cpp` expose a C-compatible ABI — opaque
+handles, `aeslib_status` return codes instead of exceptions, and explicit
+buffer ownership — built as a shared library (`aeslib_c`) so it can be
+loaded from another language's runtime. It's built by default
+(`-DAESLIB_BUILD_C_API=OFF` to disable) and lands at `build/libaeslib_c.so`
+(Linux), `build/libaeslib_c.dylib` (macOS), or
+`build\Release\aeslib_c.dll`/`build\aeslib_c.dll` (Windows, depending on
+generator).
+
+`bindings/python/` is the required "at least a minimal example of calling
+it from one other language": `aeslib_ffi.py` is a `ctypes` wrapper around
+the C ABI, and `demo.py` uses it to run an AES-256-CTR and an
+AES-256-GCM-with-AAD round trip, plus a tampered-tag rejection check —
+exactly the same shape as `main.cpp`'s harness, but calling exclusively
+through the C ABI rather than linking the C++ library. Run it directly:
+
+```sh
+AESLIB_C_LIBRARY_PATH=build/libaeslib_c.dylib python3 bindings/python/demo.py   # adjust path per platform
+```
+
+It's also wired into the test suite as `aeslib.capi_python`, including
+under `-DAESLIB_ENABLE_SANITIZERS=ON` on both Linux and macOS (the build
+preloads ASan's own runtime ahead of the Python interpreter that runs the
+test — `LD_PRELOAD` on Linux, `DYLD_INSERT_LIBRARIES` on macOS against the
+framework's unshimmed interpreter binary, see DESIGN.md for why that
+matters), so `ctest` already covers it:
+
+```sh
+ctest --test-dir build --output-on-failure -R capi_python
+```
+
+See DESIGN.md's "Foreign-language interface" section for the ABI design
+rationale (why opaque handles and status codes, buffer-ownership rules,
+symbol visibility, and what's deliberately out of scope).
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push/PR: native build+test on
@@ -145,12 +186,12 @@ verified" section for how this was validated and its limitations.
 
 ## Scope
 
-This submission implements the challenge's core requirements plus seven
+This submission implements the challenge's core requirements plus eight
 Section 3 bonus objectives: the unit-test suite (3.1), additional
 architectures (3.2 — ARM AArch64 Crypto Extensions), safer key storage (3.4),
 key generation ergonomics (3.5), minimizing key exposure in memory (3.6),
-additional AES modes (AES-128 + AES-GCM), and generic support for other
-types via templates.
+additional AES modes (AES-128 + AES-GCM), generic support for other types via
+templates, and a foreign-language interface (3.7).
 
 **Bonus 3.2 — Additional architectures**: `src/aes_core_arm.cpp` adds a
 second hardware backend, AES-256/AES-128 forward-cipher encryption using
@@ -273,6 +314,43 @@ untouched `std::vector<std::byte>` baseline path produces for the same
 bytes; plus compile-time `static_assert`s proving the trait rejects
 non-trivially-copyable types (a struct holding a `std::vector` member, a
 `std::vector<std::string>`).
+
+**Bonus 3.7 — Foreign-language interface**: `include/aeslib/capi.h` /
+`src/capi.cpp` add a C-compatible ABI covering key generation/load/save,
+AES-256-CTR, and AES-GCM, built as a new `aeslib_c` shared-library CMake
+target. Design choices: an opaque `aeslib_key_t` handle (the header never
+depends on `SecretKey`'s C++ layout); `aeslib_status` return codes mapped
+1:1 from the existing exception hierarchy plus a thread-local
+`aeslib_last_error_message()`, since a C++ exception unwinding across an
+`extern "C"` boundary into another language's runtime is undefined
+behavior; fixed-size caller-allocated arrays for the nonce/tag (already
+compile-time-constant sizes) but library-allocated heap buffers + a
+matching `aeslib_buffer_free()` for variable-length ciphertext/plaintext,
+to avoid the classic cross-allocator free() mismatch at a shared-library
+boundary (especially relevant on Windows, where a DLL and its caller can
+have distinct CRT heaps); and hidden-by-default symbol visibility with an
+explicit `AESLIB_C_API` export macro, so only the intended `aeslib_*`
+symbols are part of the exported surface. `bindings/python/` is the
+required example from a second language: `aeslib_ffi.py`, a `ctypes`
+wrapper declaring explicit `argtypes`/`restype` for every exported
+function, and `demo.py`, which round-trips AES-256-CTR and
+AES-256-GCM-with-AAD through the C ABI and confirms a tampered GCM tag is
+rejected with `AESLIB_ERR_AUTHENTICATION` rather than silently accepted.
+See DESIGN.md's "Foreign-language interface" section for the full design
+rationale, cited sources, and stated scope limits (passphrase-wrapped key
+storage isn't exposed through the C ABI; the Python smoke test also runs
+under the sanitizer build, on both Linux and macOS, by preloading ASan's
+runtime ahead of the interpreter that runs it — macOS additionally needed
+routing around a framework-`python3` shim/`posix_spawn` quirk, see
+DESIGN.md).
+
+Test coverage: `aeslib.capi_python` (registered via CTest, see
+`CMakeLists.txt`) runs `bindings/python/demo.py` against the just-built
+`aeslib_c` library on every `ctest` invocation — an actual cross-language
+round trip, not just a compile check — covering AES-256-CTR and
+AES-256-GCM-with-AAD round trips plus GCM tamper-detection through the C
+ABI specifically (as opposed to the pre-existing `aeslib.gcm`/`aeslib.ctr`
+suites, which exercise the C++ API directly).
 
 ## AI tool usage disclosure
 
@@ -432,6 +510,52 @@ this submission. Specifically:
   caveat (e.g. a trivially copyable struct holding a raw pointer) was
   identified during design, not left implicit. See DESIGN.md's "Generic
   support for other types via templates" section for the full rationale.
+- **Foreign-language interface (bonus 3.7)** — upfront web research into C
+  ABI design for C++ libraries (opaque-handle/PImpl patterns, status-code
+  error reporting instead of exceptions crossing an `extern "C"` boundary),
+  Python `ctypes` binding practice (explicit `argtypes`/`restype`,
+  allocator-boundary buffer ownership), and general FFI pitfalls (name
+  mangling, calling conventions, cross-allocator `free()` mismatches on
+  Windows) before designing `include/aeslib/capi.h`/`src/capi.cpp` and the
+  `bindings/python/` example. `POSITION_INDEPENDENT_CODE` and the new
+  `aeslib_c` `SHARED` CMake target, the `AESLIB_C_API` export-macro/hidden-
+  visibility setup, and the CTest-registered `aeslib.capi_python` smoke test
+  were written and reviewed by the author. One issue was found,
+  investigated, and — after a second look — actually fixed rather than
+  worked around, during a build-verification pass: the initial
+  `aeslib.capi_python` test was also registered under the
+  `AESLIB_ENABLE_SANITIZERS=ON` build, and actually running it there
+  surfaced ASan's "Interceptors are not working... loaded too late (e.g.
+  via dlopen)" abort — Python's `ctypes.CDLL()` loading an
+  ASan-instrumented shared library into an already-running, non-ASan
+  `python3` process is exactly that unsupported case. The standard fix is
+  to preload ASan's own runtime into `python3` first; on Linux
+  (`LD_PRELOAD`-ing the runtime resolved via `${CMAKE_CXX_COMPILER}
+  -print-file-name=...`) this worked immediately. On macOS, the same
+  preload (`DYLD_INSERT_LIBRARIES`) was first observed to *not* fix it —
+  confirmed via `DYLD_PRINT_LIBRARIES` that the runtime genuinely loaded
+  and interposed correctly, and that a plain `python3 -c "pass"` under the
+  same preload ran clean, yet a subsequent `ctypes.CDLL()` of the
+  ASan-built library still aborted identically — which was initially
+  (incorrectly) written up as a fundamental, unfixable Darwin ASan
+  limitation and the test skipped there. A web search specifically for
+  that combination of symptoms (preload demonstrably working, dlopen still
+  failing) surfaced two independent writeups of the exact same bug
+  ([tobywf.com/2021/02/python-ext-asan](https://tobywf.com/2021/02/python-ext-asan/),
+  [jonasdevlieghere.com/post/sanitizing-python-modules](https://jonasdevlieghere.com/post/sanitizing-python-modules/)):
+  a framework-build `python3` is a shim that re-execs the real interpreter
+  via `posix_spawn`, which drops `DYLD_INSERT_LIBRARIES` before the
+  process that actually calls `ctypes.CDLL()` starts — not an ASan/dlopen
+  limitation at all. Both writeups' fix (launch the unshimmed interpreter
+  bundled at `.../Resources/Python.app/Contents/MacOS/Python` instead of
+  the `python3` shim) was tested directly against this project's
+  `aeslib_c.dylib` and confirmed working, and `CMakeLists.txt` now applies
+  it automatically (walking up from `Python3_EXECUTABLE` to find that
+  binary) — so `aeslib.capi_python` genuinely runs under sanitizers on
+  *both* Linux and macOS now, rather than being permanently skipped on the
+  latter based on the earlier, incomplete diagnosis. See DESIGN.md's
+  "Foreign-language interface" section for the full account, including why
+  the first conclusion was wrong and what specifically corrected it.
 - **Documentation** — this README and DESIGN.md (with updated Scope and feature descriptions).
 
 All code was reviewed and is understood by the author. All backends are

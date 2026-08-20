@@ -24,6 +24,11 @@ sample.key
 # part of the project.
 .claude/
 
+# Python bytecode cache (bindings/python/, run manually or via the
+# aeslib.capi_python CTest test).
+__pycache__/
+*.pyc
+
 # Editors and IDEs
 .idea/
 .vscode/

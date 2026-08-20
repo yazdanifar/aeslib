@@ -13,6 +13,9 @@ include/aeslib/       public API headers
   byte_view.hpp         byte-viewable-type traits for the generic template
                          encrypt/decrypt_as<T> overloads (bonus)
   exceptions.hpp        IoError / FormatError
+  capi.h                 C-compatible ABI (bonus 3.7, see "Foreign-language
+                         interface" below) — the one header not written in
+                         C++
 src/                   implementation
   aes256_ctr.cpp        CTR-mode driver: builds counter blocks, dispatches
                          to a backend, XORs the keystream
@@ -34,7 +37,10 @@ src/                   implementation
   csprng.cpp              OS CSPRNG wrapper
   key.cpp, container.cpp  key/container (de)serialization and file I/O
   internal.hpp             shared declarations, not part of the public API
+  capi.cpp                 implements capi.h: opaque-handle wrapping,
+                         exception-to-status-code translation (bonus 3.7)
 main.cpp                end-to-end harness (see README.md)
+bindings/python/       ctypes binding + demo for capi.h (bonus 3.7)
 ```
 
 ## Hardware/software dispatch
@@ -985,6 +991,209 @@ the number of type parameters for a secondary, usually-empty parameter, for
 little practical benefit. `Container`/`GcmContainer` serialization and
 `read_file`/`write_file` are unaffected — those already operate on bytes,
 not on a type a caller would want genericized.
+
+## Foreign-language interface (bonus)
+
+The rest of this library's public surface (`include/aeslib/*.hpp`) is
+ordinary modern C++: `std::vector<std::byte>`, `std::filesystem::path`,
+exceptions, templates. None of that is callable from another language —
+C++ name mangling means even the *names* aren't resolvable without a
+demangler that agrees with this compiler's ABI, exceptions unwinding across
+a language boundary are undefined behavior, and STL container layouts are
+compiler/standard-library-version-specific, not a stable ABI. `include/
+aeslib/capi.h` / `src/capi.cpp` add a second, deliberately narrower public
+surface — plain C, `extern "C"` linkage, built as a shared library
+(`aeslib_c`) — specifically to be loadable from something other than this
+same C++ toolchain.
+
+**Opaque handle, not an exposed struct.** `aeslib_key_t` is `typedef struct
+aeslib_key* aeslib_key_t`, where `struct aeslib_key { aeslib::SecretKey key;
+}` is defined only inside `capi.cpp` — the public header never sees
+`SecretKey`'s layout (which includes its `mlock`-guarded byte array and
+`KeySize` field, entirely C++-internal concerns). This is the standard
+PImpl-via-C-handle pattern for wrapping a C++ type at a C boundary: the
+handle's *identity* is public, its *representation* isn't, so the C++ side
+can change `SecretKey`'s internals (as bonus 3.4/3.5/3.6 already have,
+repeatedly) without the C ABI's binary layout ever needing to change to
+match.
+
+**Status codes, not exceptions, cross the boundary.** Every function that
+can fail returns `aeslib_status`, a C enum that maps 1:1 onto this
+project's existing exception hierarchy (`exceptions.hpp`:
+`IoError`→`AESLIB_ERR_IO`, `FormatError`→`AESLIB_ERR_FORMAT`,
+`LimitError`→`AESLIB_ERR_LIMIT`,
+`AuthenticationError`→`AESLIB_ERR_AUTHENTICATION`), plus
+`AESLIB_ERR_INVALID_ARGUMENT` for a null/malformed argument caught before
+any C++ call and `AESLIB_ERR_UNKNOWN` as a catch-all. `aeslib_last_error_
+message()` returns the underlying exception's `what()` (kept in a
+thread-local `std::string`, so concurrent callers on different threads
+don't clobber each other's message) for callers who want the detail, not
+just the code. Every exported function in `capi.cpp` is a `try { ... }
+catch (...) { return translate_exception(); }` — `translate_exception()`
+re-throws (from inside the `catch` block, the standard idiom for
+dispatching on an in-flight exception's dynamic type) into a `catch` chain
+ordered most-derived-first, so no C++ exception ever propagates past
+`capi.cpp`'s own frame. This is the one non-negotiable rule for this kind
+of boundary: a C++ exception unwinding into a caller that isn't C++ (or
+even into different C++ code compiled with an incompatible exception ABI)
+is undefined behavior, not a caught-and-reported error.
+
+**Fixed arrays for fixed-size data, heap buffers + an explicit free
+function for the rest.** The CTR nonce (12 bytes) and GCM tag (16 bytes)
+are already compile-time-constant sizes in the C++ layer
+(`kNonceSizeBytes`, `kGcmTagSizeBytes`) — `capi.h` duplicates those as
+`AESLIB_NONCE_BYTES`/`AESLIB_TAG_BYTES` `#define`s (a plain C header can't
+`#include` the C++ headers that define the originals) and a
+`static_assert` on each side of every encrypt call in `capi.cpp` catches
+the two ever drifting apart. Callers pass a stack `uint8_t[12]`/`uint8_t
+[16]` array for these — no allocation needed for data whose size is
+already known. Ciphertext/plaintext, whose length depends on the input,
+are different: `capi.cpp` allocates a buffer (`new uint8_t[n]`) and hands
+back a pointer plus a length, and the *only* sanctioned way to release it
+is `aeslib_buffer_free()` (`delete[]` internally) — never the caller's own
+`free()`/`delete[]`. This is the allocator-boundary pitfall the FFI
+research below calls out directly: a shared library and its caller can be
+linked against different allocators (most concretely on Windows, where a
+DLL built against one CRT and an EXE/interpreter linked against another
+have genuinely separate heaps — freeing one heap's pointer with the
+other's `free()` is memory corruption, not just a leak). Pairing every
+`aeslib_*_encrypt`/`_decrypt` allocation with the one library-provided free
+function sidesteps that on every platform, not just Windows.
+
+**Symbol visibility.** `aeslib_c` is built with `CXX_VISIBILITY_PRESET
+hidden` (`CMakeLists.txt`) plus an explicit `AESLIB_C_API` export macro
+(`__declspec(dllexport)`/`dllimport` on Windows, switched by an
+`AESLIB_C_BUILDING_DLL` define set only while compiling the target itself;
+`__attribute__((visibility("default")))` elsewhere) on every function in
+`capi.h`. Only the intended `aeslib_*` symbols are part of the shared
+library's exported surface — not `capi.cpp`'s internal helpers, and not
+whatever the statically-linked `aeslib` archive happens to define
+internally. A minimal, deliberate exported surface is what makes a C ABI
+something a consumer can treat as stable across a rebuild, rather than an
+accidental snapshot of every symbol the linker happened to leave visible.
+
+**Why a shared library, and `POSITION_INDEPENDENT_CODE`.** The core
+`aeslib` target is a static archive (`add_library(aeslib STATIC ...)`) —
+fine for a C++ consumer that links it directly, but a non-C++ runtime needs
+something it can `dlopen()`/`LoadLibrary()` at run time, which means a
+shared object/DLL. `aeslib_c` (`SHARED`) links the static `aeslib` archive
+in, which on Linux/macOS requires every object file in that archive to have
+been compiled position-independent — `set_target_properties(aeslib
+PROPERTIES POSITION_INDEPENDENT_CODE ON)` was added for exactly this
+(negligible cost for what's normally a directly-linked static library, and
+harmless on Windows where PIC isn't a meaningful distinction).
+
+**Deliberately out of scope: passphrase-wrapped key storage.** Bonus 3.4's
+`SecretKey::save_to_file_encrypted`/`load_from_file_encrypted` are not
+exposed through the C ABI. This bonus's surface is intentionally the
+minimal set that demonstrates the pattern end to end (key lifecycle, both
+implemented cipher modes, error propagation) rather than a mechanical
+re-export of the entire C++ API; extending `capi.h` with the two
+passphrase-wrapping functions would be a straightforward follow-up (same
+opaque-handle-in, status-code-out shape, no new design questions) if this
+surface needed to grow.
+
+**Testing across the language boundary.** `bindings/python/` is the
+required "at least a minimal example of calling it from one other
+language": `aeslib_ffi.py` is a `ctypes` wrapper declaring explicit
+`argtypes`/`restype` for every exported function (ctypes performs no
+automatic signature checking — a wrong or missing declaration here is a
+silent memory-corruption bug, not a caught error, which is exactly the
+Python-side analogue of the C++-side "no undefined behavior" requirement
+elsewhere in this brief), and `demo.py` round-trips AES-256-CTR and
+AES-256-GCM-with-AAD through the C ABI, then deliberately tampers with a
+GCM tag and asserts it comes back as `AESLIB_ERR_AUTHENTICATION` rather
+than silently succeeding — a negative-path FFI test, not just a
+happy-path one. This is registered as the `aeslib.capi_python` CTest test
+(`CMakeLists.txt`), so it runs automatically on every `ctest` invocation
+alongside the existing C++ suites — a real cross-language contract test
+integrated into the same test runner, not a script that only gets run if
+someone remembers to, per the FFI-testing practice cited below.
+
+**Running under the sanitizer build.** Naively, `aeslib.capi_python` aborts
+under `-DAESLIB_ENABLE_SANITIZERS=ON` with AddressSanitizer's own
+diagnostic, `"Interceptors are not working. This may be because
+AddressSanitizer is loaded too late (e.g. via dlopen)"` — ASan needs to be
+the first thing loaded into a process, and Python's `ctypes.CDLL()`
+loading an ASan-instrumented `aeslib_c` into an already-running, non-ASan
+`python3` interpreter is exactly that case. The fix is to preload ASan's
+own runtime into `python3` first (`LD_PRELOAD` on Linux,
+`DYLD_INSERT_LIBRARIES` on macOS) — a standard, widely-used technique for
+testing ASan-built Python C extensions. `CMakeLists.txt` does this on both
+platforms: it resolves the matching runtime via `${CMAKE_CXX_COMPILER}
+-print-file-name=...` (`libclang_rt.asan-<arch>.so` for Clang on Linux,
+`libasan.so` for GCC, `libclang_rt.asan_osx_dynamic.dylib` for Clang on
+macOS) and sets it as `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES` in the test's
+`ENVIRONMENT`.
+
+**The macOS half needed one more fix, and it came from prior art, not
+guesswork.** A first pass preloading `DYLD_INSERT_LIBRARIES` and pointing
+it at `python3` still hit the same "loaded too late" abort — but a plain
+`python3 -c "pass"` under the identical preload ran clean, and
+`DYLD_PRINT_LIBRARIES=1` confirmed dyld *did* load the ASan runtime first
+and apply its interposing tuples. That combination (the preload visibly
+works, yet a dlopen()'d ASan library still fails) matched a documented bug
+two independent people had already hit and written up —
+[tobywf.com/2021/02/python-ext-asan](https://tobywf.com/2021/02/python-ext-asan/)
+and
+[jonasdevlieghere.com/post/sanitizing-python-modules](https://jonasdevlieghere.com/post/sanitizing-python-modules/) —
+rather than a genuine Darwin-ASan-can't-dlopen limitation: a
+framework-build `python3` (Homebrew's included) is a shim binary that
+re-execs the real interpreter via `posix_spawn`, and that internal respawn
+drops `DYLD_INSERT_LIBRARIES` before the process that actually calls
+`ctypes.CDLL()` ever starts. Both writeups' fix is to bypass the shim
+entirely and launch the *unshimmed* interpreter binary bundled inside the
+framework at `.../Resources/Python.app/Contents/MacOS/Python` — confirmed
+directly here too: the same preload against that binary instead of the
+`python3` shim, running this project's `aeslib_c.dylib`, works end to end
+(`ctest` result: `aeslib.capi_python` passing, all 10 suites green, under
+`-DAESLIB_ENABLE_SANITIZERS=ON` on macOS/arm64). `CMakeLists.txt` walks up
+from `Python3_EXECUTABLE` (`bin/python3.x`) to its `Versions/<ver>`
+directory and substitutes the unshimmed binary at that path if it exists,
+falling back to a `message(WARNING ...)`-and-skip only if no such binary
+can be found (e.g. a non-framework macOS Python build with nothing to fall
+back to). This only ever affects *which interpreter runs the Python-side
+smoke test* — `capi.cpp`'s own C++ code is unconditionally covered by
+ASan/UBSan through the regular `aeslib_tests`/`aes_harness` runs in that
+build either way, which link it directly rather than loading it via
+`dlopen()`.
+
+This section's design decisions were informed by:
+
+- **[Nibble Stew: "Exposing a C++ library with a stable plain C API"](https://nibblestew.blogspot.com/2016/11/exposing-c-library-with-stable-plain-c.html?m=1)**
+  and **["Opaque Pointers in C++: A Practical Guide to Stable Interfaces
+  (PImpl and Handles)"](https://thelinuxcode.com/opaque-pointers-in-c-a-practical-guide-to-stable-interfaces-pimpl-and-handles/)**:
+  the opaque-handle-plus-status-code shape this API follows, and the
+  reasoning for keeping C++ types entirely out of the public header.
+- **[ecmwf/odc's API design notes](https://github.com/ecmwf/odc/blob/1.4.1/docs/content/implementation/api-design.rst)**:
+  a concrete example of the `<library>_<object>_<method>(<handle>, ...)`
+  naming convention and the "one function to get error details, every
+  other function returns a code" pattern used here.
+- **[Python `ctypes` documentation](https://docs.python.org/3/library/ctypes.html)**,
+  **["Python Bindings With Ctypes"](https://apetenchea.github.io/2023/10/04/python-bindings-with-ctypes/)**,
+  and **["Python C Library Function Binding Using ctypes"](https://leimao.github.io/blog/Python-C-Library-Function-Binding-Using-ctypes/)**:
+  the source for `aeslib_ffi.py`'s explicit `argtypes`/`restype`
+  declarations on every function, and the "memory allocated on one side of
+  the boundary must be freed by that same side" principle behind
+  `aeslib_buffer_free()`.
+- General FFI-pitfall references on name mangling, calling conventions, and
+  cross-allocator `free()` mismatches at a DLL boundary — the basis for
+  this design's `extern "C"` linkage, avoidance of any non-default calling
+  convention, and the buffer-ownership rule above.
+- **[google/sanitizers issue #796](https://github.com/google/sanitizers/issues/796)**
+  and the **[AddressSanitizerAsDso wiki page](https://github.com/google/sanitizers/wiki/AddressSanitizerAsDso)**:
+  confirmation that "ASan runtime does not come first in the initial
+  library list; either link it into the application or preload it
+  manually" is a known, general ASan constraint, not specific to Python.
+- **["Using LLVM's address sanitizer and leak sanitizer for Python extensions"](https://tobywf.com/2021/02/python-ext-asan/)**
+  and **["Sanitizing C++ Python Modules"](https://jonasdevlieghere.com/post/sanitizing-python-modules/)**:
+  the two independent writeups that diagnosed and fixed the exact macOS
+  bug this project hit — a framework-build `python3`'s `posix_spawn`
+  re-exec dropping `DYLD_INSERT_LIBRARIES`, fixed by preloading against
+  the unshimmed `Resources/Python.app/Contents/MacOS/Python` binary
+  instead — which this project's `CMakeLists.txt` now applies directly,
+  confirmed working against `aeslib_c.dylib` rather than assumed to
+  transfer from someone else's setup.
 
 ## Randomness
 
