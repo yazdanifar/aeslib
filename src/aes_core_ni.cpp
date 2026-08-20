@@ -56,10 +56,10 @@ void key_expansion_step_odd(const __m128i& temp1, __m128i* temp3) {
 
 std::array<__m128i, kNumRoundKeys> expand_key_ni(const SecretKey& key) {
     std::array<__m128i, kNumRoundKeys> schedule{};
-    const auto* key_bytes = reinterpret_cast<const unsigned char*>(key.bytes().data());
+    const auto* raw_key_bytes = reinterpret_cast<const unsigned char*>(key_bytes(key).data());
 
-    __m128i temp1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(key_bytes));
-    __m128i temp3 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(key_bytes + 16));
+    __m128i temp1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(raw_key_bytes));
+    __m128i temp3 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(raw_key_bytes + 16));
     schedule[0] = temp1;
     schedule[1] = temp3;
 

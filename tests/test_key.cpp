@@ -14,7 +14,7 @@ using aeslib::SecretKey;
 AESLIB_TEST(key, generate_produces_distinct_keys) {
     const SecretKey a = SecretKey::generate();
     const SecretKey b = SecretKey::generate();
-    CHECK(a.bytes() != b.bytes());
+    CHECK(aeslib::detail::key_bytes(a) != aeslib::detail::key_bytes(b));
 }
 
 AESLIB_TEST(key, save_load_round_trip) {
@@ -23,14 +23,14 @@ AESLIB_TEST(key, save_load_round_trip) {
     original.save_to_file(path);
     const SecretKey loaded = SecretKey::load_from_file(path);
     std::filesystem::remove(path);
-    CHECK(loaded.bytes() == original.bytes());
+    CHECK(aeslib::detail::key_bytes(loaded) == aeslib::detail::key_bytes(original));
 }
 
 AESLIB_TEST(key, move_from_wipes_source) {
     SecretKey original = SecretKey::generate();
     const SecretKey moved = std::move(original);
     (void)moved;
-    for (const std::byte b : original.bytes()) CHECK(b == std::byte{0});
+    for (const std::byte b : aeslib::detail::key_bytes(original)) CHECK(b == std::byte{0});
 }
 
 AESLIB_TEST(key, load_missing_file_throws_io_error) {

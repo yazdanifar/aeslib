@@ -110,4 +110,8 @@ SecretKey SecretKey::load_from_file(const std::filesystem::path& path) {
     return key;
 }
 
+namespace detail {
+const std::array<std::byte, kKeySizeBytes>& key_bytes(const SecretKey& key) noexcept { return key.bytes_; }
+} // namespace detail
+
 } // namespace aeslib

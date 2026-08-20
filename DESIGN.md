@@ -235,6 +235,49 @@ can't be accidentally duplicated by value — and every consumer in this
 codebase (`aes256_ctr.cpp`, both AES backends) takes it by `const&`, so no
 incidental copies of the raw key exist anywhere in the library.
 
+### Key generation ergonomics (bonus 3.5)
+
+`SecretKey`'s API is designed so a caller has to work to misuse it, rather
+than relying on documentation to warn them off:
+
+- **Named factories, no public default state.** `generate()` and
+  `load_from_file()` are the only ways to obtain a `SecretKey`; the default
+  constructor is private, so there's no way to end up holding a
+  default-constructed, all-zero "key" that looks valid but isn't. Both
+  factories are `[[nodiscard]]` — a stray `SecretKey::generate();` with the
+  result thrown away is always a bug, and this turns it into a compiler
+  warning instead of a silently-generated-and-destroyed key.
+- **Move-only and `final`.** Copy is `= delete`d (no accidental duplication
+  by value), and the class is marked `final` — it hand-manages a wipe/lock
+  resource in its special members, and disallowing derivation closes off a
+  category of lifetime/slicing misuse a subclass could otherwise introduce.
+- **No public raw-byte accessor.** The class used to expose a public
+  `bytes()` returning `const std::array<std::byte, 32>&`. That's a real
+  footgun: any caller — not just the AES backends that actually need raw
+  access for key expansion — could write `auto leaked = key.bytes();` (a
+  silent copy into a plain local array that outlives the `SecretKey`,
+  escaping wipe/`mlock` entirely) or `std::cout << (int)key.bytes()[0];`
+  (trivial accidental logging). Neither `aes256_ctr.cpp` nor `main.cpp` ever
+  called it — only the two backends' key-expansion code did. `bytes()` was
+  removed and replaced with `aeslib::detail::key_bytes()`, a `friend` free
+  function declared in `key.hpp` but reachable only from `.cpp` files that
+  `#include "src/internal.hpp"` — i.e. the two AES backends and the test
+  suite (which reaches it the same way it already reaches `ct_sbox`). An
+  external caller linking against the public `include/aeslib/` headers has
+  no way to read, copy, or print raw key bytes at all; the only sanctioned
+  way to get key material out of a `SecretKey` is the explicit,
+  deliberately-named `save_to_file()`.
+
+This last point follows guidance from multiple independent sources: the SEI
+CERT C++ Coding Standard's rule against returning references to a member no
+less accessible than the member is meant to be, and the design principle
+behind NaCl's API (identified as the least misuse-prone cryptographic
+library in a comparative study) that raw key bytes shouldn't be accepted or
+returned by anything except the code that constructs/consumes the key type
+itself. Rust's `secrecy` crate (`Secret<T>`/`ExposeSecret`) applies the same
+idea in a different language: one explicit, narrow, auditable access path
+instead of an ordinary public getter every caller can reach.
+
 ### Minimizing key exposure in memory (bonus 3.6)
 
 Three techniques are used together, addressing both the raw key and its

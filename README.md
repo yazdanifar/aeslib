@@ -118,15 +118,18 @@ verified" section for how this was validated and its limitations.
 
 ## Scope
 
-This submission implements the challenge's core requirements plus two
-Section 3 bonus objectives: the unit-test suite (3.1) described above, and
-minimizing key exposure in memory (3.6) — `SecretKey` locks its backing
-pages against swap (`mlock`/`VirtualLock`) for as long as it's alive on top
-of its existing wipe-on-destruction/move behavior, and both AES backends
-now also wipe their derived round-key schedule after each block, not just
-the raw key. See DESIGN.md's "Minimizing key exposure in memory" section
-for the full writeup and stated threat model. No other Section 3 bonus
-objectives were attempted.
+This submission implements the challenge's core requirements plus three
+Section 3 bonus objectives: the unit-test suite (3.1) described above, key
+generation ergonomics (3.5) — `SecretKey` has no public raw-byte accessor,
+so an external caller has no way to accidentally copy, log, or serialize
+key bytes; the only sanctioned way to get key material out is the explicit
+`save_to_file()` — and minimizing key exposure in memory (3.6) — `SecretKey`
+locks its backing pages against swap (`mlock`/`VirtualLock`) for as long as
+it's alive on top of its existing wipe-on-destruction/move behavior, and
+both AES backends now also wipe their derived round-key schedule after each
+block, not just the raw key. See DESIGN.md's "Key generation ergonomics"
+and "Minimizing key exposure in memory" sections for the full writeup and
+stated threat model. No other Section 3 bonus objectives were attempted.
 
 ## AI tool usage disclosure
 
@@ -153,6 +156,14 @@ this submission. Specifically:
   Python's `cryptography` library and independently cross-checked against
   the `openssl enc -aes-256-ctr` CLI before being hardcoded as expected
   values, rather than generated and trusted from a single source.
+- **Key generation ergonomics (bonus 3.5)** — removed `SecretKey`'s public
+  `bytes()` accessor in favor of an internal-only `detail::key_bytes()`
+  friend function reachable only from the AES backends and tests, plus
+  `[[nodiscard]]` on the key factories and marking the class `final`. This
+  followed a round of checking the approach against external references
+  (the SEI CERT C++ Coding Standard's rule against exposing references to
+  restricted members, the misuse-resistant-API paper behind NaCl's design,
+  and Rust's `secrecy` crate) before implementing, rather than guessing.
 - **Key-exposure hardening (bonus 3.6)** — a further follow-up pass adding
   `mlock`/`VirtualLock` swap protection to `SecretKey`, and wiping the
   derived round-key schedule (not just the raw key) in both AES backends

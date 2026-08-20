@@ -95,7 +95,7 @@ Word xor_word(Word a, Word b) {
 // specialized for Nk=8).
 std::array<Word, kScheduleWords> expand_key(const SecretKey& key) {
     std::array<Word, kScheduleWords> schedule{};
-    const auto& kb = key.bytes();
+    const auto& kb = key_bytes(key);
 
     for (int i = 0; i < kNk; ++i) {
         schedule[i] = Word{static_cast<std::uint8_t>(kb[4 * i]),
