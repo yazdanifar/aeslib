@@ -156,7 +156,8 @@ exactly the same shape as `main.cpp`'s harness, but calling exclusively
 through the C ABI rather than linking the C++ library. Run it directly:
 
 ```sh
-AESLIB_C_LIBRARY_PATH=build/libaeslib_c.dylib python3 bindings/python/demo.py   # adjust path per platform
+# adjust path per platform (build/libaeslib_c.so on Linux, etc.)
+AESLIB_C_LIBRARY_PATH=build/libaeslib_c.dylib python3 bindings/python/demo.py
 ```
 
 It's also wired into the test suite as `aeslib.capi_python`, including
@@ -242,4 +243,6 @@ per item rather than repeated here.
 
 ## AI tool usage disclosure
 
-Claude (Anthropic), via Claude Code, was used as a pair-programmer across this submission, covering implementation, tests, CI, and documentation. All code was reviewed and is understood by the author.
+Claude (Anthropic), via Claude Code, was used as a pair-programmer across
+this submission, covering implementation, tests, CI, and documentation. All
+code was reviewed and is understood by the author.
