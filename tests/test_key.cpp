@@ -110,10 +110,18 @@ AESLIB_TEST(key, aes128_save_load_round_trip) {
     CHECK(std::equal(original_bytes.begin(), original_bytes.begin() + 16, loaded_bytes.begin()));
 }
 
-AESLIB_TEST(key, aes128_save_to_file_encrypted_throws_limit_error) {
+AESLIB_TEST(key, aes128_save_load_encrypted_round_trip) {
+    // save_to_file_encrypted/load_from_file_encrypted support both key sizes
+    // (see key_storage.cpp's version-2 wrapped-key format) — the more
+    // detailed coverage for this (invalid size markers, tamper detection,
+    // etc.) lives in tests/test_key_storage.cpp; this just confirms the
+    // basic round trip from SecretKey's own test file.
     const SecretKey key = SecretKey::generate(aeslib::KeySize::Aes128);
     const auto path = std::filesystem::temp_directory_path() / "aeslib_test_aes128_encrypted.key";
-    CHECK_THROWS(key.save_to_file_encrypted(path, "passphrase"), aeslib::LimitError);
+    key.save_to_file_encrypted(path, "passphrase", 1000);
+    const SecretKey loaded = SecretKey::load_from_file_encrypted(path, "passphrase");
+    std::filesystem::remove(path);
+    CHECK(loaded.size() == aeslib::KeySize::Aes128);
 }
 
 #if defined(__linux__)

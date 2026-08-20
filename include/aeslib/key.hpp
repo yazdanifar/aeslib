@@ -69,11 +69,13 @@ public:
 
     // Writes the key to a passphrase-protected file via PBKDF2-HMAC-SHA256
     // key derivation, AES-256-CTR encryption, and HMAC-SHA256 authentication.
-    // File format is a fixed 101-byte structure: magic, version, salt (16 bytes),
-    // PBKDF2 iteration count, nonce, encrypted key, HMAC tag. See DESIGN.md.
-    // `iterations` defaults to 600,000 (OWASP recommendation for password hashing).
-    // AES-256 keys only — throws LimitError for an AES-128 key (see DESIGN.md's
-    // "Additional AES modes" section for why this format isn't extended yet).
+    // File format (version 2, 70 + key_size bytes): magic, version, key size
+    // marker (16 or 32), salt (16 bytes), PBKDF2 iteration count, nonce,
+    // encrypted key (key_size bytes), HMAC tag. Works for both AES-128 and
+    // AES-256 keys — the wrapping key derived from the passphrase is always
+    // AES-256, but only the caller's own key's logical size is ever wrapped
+    // and persisted. See DESIGN.md. `iterations` defaults to 600,000 (OWASP
+    // recommendation for password hashing).
     void save_to_file_encrypted(const std::filesystem::path& path, std::string_view passphrase,
                                  std::uint32_t iterations = kDefaultPbkdf2Iterations) const;
 

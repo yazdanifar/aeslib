@@ -12,6 +12,7 @@
 namespace {
 using aeslib::AuthenticationError;
 using aeslib::FormatError;
+using aeslib::KeySize;
 using aeslib::LimitError;
 using aeslib::SecretKey;
 using aeslib::read_file;
@@ -103,6 +104,39 @@ AESLIB_TEST(key_storage, save_load_encrypted_round_trip) {
     const SecretKey loaded = SecretKey::load_from_file_encrypted(path, "mypassphrase");
     std::filesystem::remove(path);
     CHECK(aeslib::detail::key_bytes(loaded) == aeslib::detail::key_bytes(original));
+}
+
+// Round-trip with an AES-128 key: only the first 16 (logical) bytes of the
+// original's backing storage are wrapped/persisted, so compare just those —
+// the trailing 16 bytes of an AES-128 key's storage are unused random
+// padding from generate() and are not preserved through this format.
+AESLIB_TEST(key_storage, save_load_encrypted_round_trip_aes128) {
+    const SecretKey original = SecretKey::generate(KeySize::Aes128);
+    const auto path = std::filesystem::temp_directory_path() / "aeslib_test_encrypted_aes128.key";
+    constexpr std::uint32_t fast_iterations = 1000; // kMinPbkdf2Iterations
+    original.save_to_file_encrypted(path, "mypassphrase", fast_iterations);
+    const SecretKey loaded = SecretKey::load_from_file_encrypted(path, "mypassphrase");
+    std::filesystem::remove(path);
+    CHECK(loaded.size() == KeySize::Aes128);
+    CHECK(std::equal(aeslib::detail::key_bytes(loaded).begin(), aeslib::detail::key_bytes(loaded).begin() + 16,
+                      aeslib::detail::key_bytes(original).begin()));
+}
+
+// A crafted file with a syntactically-valid magic/version but a key size
+// marker that's neither 16 nor 32 must be rejected before any size math (or
+// PBKDF2 work) trusts it.
+AESLIB_TEST(key_storage, load_encrypted_rejects_invalid_size_marker) {
+    const auto path = std::filesystem::temp_directory_path() / "aeslib_test_enc_bad_marker.key";
+    std::vector<std::byte> bad_file(102);
+    bad_file[0] = std::byte{'A'};
+    bad_file[1] = std::byte{'E'};
+    bad_file[2] = std::byte{'S'};
+    bad_file[3] = std::byte{'W'};
+    bad_file[4] = std::byte{2}; // version
+    bad_file[5] = std::byte{24}; // invalid marker: neither 16 nor 32
+    write_file(path, bad_file);
+    CHECK_THROWS(SecretKey::load_from_file_encrypted(path, "passphrase"), FormatError);
+    std::filesystem::remove(path);
 }
 
 // Wrong passphrase throws AuthenticationError (all remaining tests use fast iterations for speed).
@@ -199,23 +233,25 @@ AESLIB_TEST(key_storage, save_encrypted_rejects_below_minimum_iterations) {
     CHECK_THROWS(key.save_to_file_encrypted(path, "mypassphrase", 999), LimitError);
 }
 
-// Writes a syntactically valid (magic/version/size) but otherwise
+// Writes a syntactically valid (magic/version/size marker) but otherwise
 // hand-crafted wrapped-key file with a specific iteration count, for testing
 // load_from_file_encrypted's iteration-count validation independent of a
-// real save.
+// real save. Uses an AES-256 (32-byte) size marker, giving the version-2
+// 102-byte total layout.
 std::vector<std::byte> make_wrapped_key_file_with_iterations(std::uint32_t iterations) {
-    std::vector<std::byte> data(101);
+    std::vector<std::byte> data(102);
     data[0] = std::byte{'A'};
     data[1] = std::byte{'E'};
     data[2] = std::byte{'S'};
     data[3] = std::byte{'W'};
-    data[4] = std::byte{1}; // version
-    // bytes 5..20 salt, 25..100 nonce/ciphertext/tag: left zeroed, since
+    data[4] = std::byte{2}; // version
+    data[5] = std::byte{32}; // key size marker (AES-256)
+    // bytes 6..21 salt, 26..101 nonce/ciphertext/tag: left zeroed, since
     // iteration validation happens before any of that is used.
-    data[21] = static_cast<std::byte>(iterations);
-    data[22] = static_cast<std::byte>(iterations >> 8);
-    data[23] = static_cast<std::byte>(iterations >> 16);
-    data[24] = static_cast<std::byte>(iterations >> 24);
+    data[22] = static_cast<std::byte>(iterations);
+    data[23] = static_cast<std::byte>(iterations >> 8);
+    data[24] = static_cast<std::byte>(iterations >> 16);
+    data[25] = static_cast<std::byte>(iterations >> 24);
     return data;
 }
 

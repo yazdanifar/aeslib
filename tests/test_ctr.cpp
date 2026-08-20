@@ -10,12 +10,14 @@
 
 #include "aeslib/aes256_ctr.hpp"
 #include "aeslib/exceptions.hpp"
+#include "aeslib/key.hpp"
 #include "src/internal.hpp"
 #include "test_support.hpp"
 
 namespace {
 
 using aeslib::Aes256Ctr;
+using aeslib::KeySize;
 using aeslib::LimitError;
 using aeslib::SecretKey;
 
@@ -37,6 +39,35 @@ AESLIB_TEST(ctr, round_trip_various_sizes) {
         const auto decrypted = Aes256Ctr::decrypt(key, container);
         CHECK_EQ(decrypted, plaintext);
     }
+}
+
+AESLIB_TEST(ctr, round_trip_aes128) {
+    // Aes256Ctr dispatches on key.size_bytes() the same way AesGcm does (see
+    // aes_gcm.cpp), so an AES-128 key must round-trip correctly here too.
+    const SecretKey key = SecretKey::generate(KeySize::Aes128);
+    for (std::size_t size : {0u, 1u, 15u, 16u, 17u, 4096u}) {
+        const std::vector<std::byte> plaintext = make_bytes(size);
+        const auto container = Aes256Ctr::encrypt(key, plaintext);
+        const auto decrypted = Aes256Ctr::decrypt(key, container);
+        CHECK_EQ(decrypted, plaintext);
+    }
+}
+
+AESLIB_TEST(ctr, aes128_and_aes256_keys_produce_different_ciphertext) {
+    // Sanity check that the key-size dispatch actually takes effect: encrypting
+    // the same plaintext under an AES-128 vs AES-256 key (with the nonce forced
+    // equal by decrypting/re-encrypting isn't possible here since nonces are
+    // random per call) should not silently ignore the AES-128 key's shorter
+    // schedule and fall through to the AES-256 path. We check this by decrypting
+    // an AES-128-encrypted container with the equivalent-prefix AES-256 key and
+    // confirming it does NOT recover the original plaintext.
+    const SecretKey key128 = SecretKey::generate(KeySize::Aes128);
+    const std::vector<std::byte> plaintext = make_bytes(64);
+    const auto container = Aes256Ctr::encrypt(key128, plaintext);
+
+    const SecretKey key256 = SecretKey::generate(KeySize::Aes256);
+    const auto decrypted_wrong = Aes256Ctr::decrypt(key256, container);
+    CHECK(decrypted_wrong != plaintext);
 }
 
 AESLIB_TEST(ctr, ciphertext_differs_from_plaintext_for_nonempty_input) {

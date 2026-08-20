@@ -10,9 +10,13 @@
 
 namespace aeslib {
 
-// AES-256 in CTR mode. Stateless with respect to key material (the key is
-// passed per call, never stored inside this object), so there's nothing here
-// for a caller to accidentally keep alive longer than the key itself.
+// AES in CTR mode, keyed by whatever SecretKey is passed in — dispatches on
+// key.size_bytes() the same way AesGcm does, so both AES-128 and AES-256 keys
+// work (the name predates that dispatch and was kept for API stability, the
+// same way AesGcm isn't named Aes256Gcm). Stateless with respect to key
+// material (the key is passed per call, never stored inside this object), so
+// there's nothing here for a caller to accidentally keep alive longer than
+// the key itself.
 //
 // CTR mode uses the same transform for encryption and decryption
 // (plaintext/ciphertext XORed with an AES-encrypted counter stream), so

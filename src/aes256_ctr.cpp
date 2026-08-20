@@ -24,11 +24,16 @@ Block encrypt_block(const SecretKey& key, const Block& block) {
     // Decided once per call via the runtime capability check in
     // cpu_detect.cpp — never a compile-time #ifdef, so the same binary is
     // correct whether or not the host CPU has hardware AES acceleration.
-    // aes256_encrypt_block_hw() resolves to the AES-NI or ARM Crypto
+    // aesNNN_encrypt_block_hw() resolves to the AES-NI or ARM Crypto
     // Extensions backend depending on the build's target architecture (see
-    // aes_core_hw.cpp) — this file never names either directly.
-    return active_backend() == Backend::Hardware ? detail::aes256_encrypt_block_hw(key, block)
-                                                  : detail::aes256_encrypt_block_soft(key, block);
+    // aes_core_hw.cpp) — this file never names either directly. Dispatches
+    // on key.size_bytes() the same way AesGcm::encrypt_block does (see
+    // aes_gcm.cpp), so an AES-128 SecretKey works here too.
+    const bool hw = active_backend() == Backend::Hardware;
+    if (key.size_bytes() == 16) {
+        return hw ? detail::aes128_encrypt_block_hw(key, block) : detail::aes128_encrypt_block_soft(key, block);
+    }
+    return hw ? detail::aes256_encrypt_block_hw(key, block) : detail::aes256_encrypt_block_soft(key, block);
 }
 
 // Builds the 16-byte CTR input block from the container's 96-bit nonce and a

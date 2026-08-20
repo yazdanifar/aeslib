@@ -343,19 +343,24 @@ incidental copies of the raw key exist anywhere in the library.
 under a passphrase-derived key before it ever touches disk, instead of the
 plain-bytes `save_to_file()`/`load_from_file()` path.
 
-**Wire format** (`src/key_storage.cpp`, fixed 101 bytes, magic `"AESW"`,
-distinct from the ciphertext container's own format so the two file types
-can't be confused):
+**Wire format** (`src/key_storage.cpp`, version 2, `70 + key_size` bytes —
+86 for AES-128, 102 for AES-256 — magic `"AESW"`, distinct from the
+ciphertext container's own format so the two file types can't be confused).
+`key_size` is 16 or 32, matching the wrapped `SecretKey`'s own logical size
+— only its actual key bytes are ever wrapped, never the unused-but-random
+padding past an AES-128 key's logical end. The wrapping key itself, derived
+from the passphrase via PBKDF2, is always AES-256 regardless of `key_size`:
 
 | offset | size | field |
 | --- | --- | --- |
 | 0 | 4 | magic `"AESW"` |
-| 4 | 1 | version (`1`) |
-| 5 | 16 | salt (random, 128-bit) |
-| 21 | 4 | PBKDF2 iteration count (uint32 LE) |
-| 25 | 12 | AES-256-CTR nonce for the wrap |
-| 37 | 32 | wrapped key ciphertext |
-| 69 | 32 | HMAC-SHA256 tag over bytes `[0, 69)` |
+| 4 | 1 | version (`2`) |
+| 5 | 1 | key size marker (`16` or `32`) |
+| 6 | 16 | salt (random, 128-bit) |
+| 22 | 4 | PBKDF2 iteration count (uint32 LE) |
+| 26 | 12 | AES-256-CTR nonce for the wrap |
+| 38 | `key_size` | wrapped key ciphertext |
+| `38+key_size` | 32 | HMAC-SHA256 tag over bytes `[0, 38+key_size)` |
 
 **Why PBKDF2-HMAC-SHA256 over an OS keystore.** Windows DPAPI and Linux
 `libsecret`/keyring were considered first, since the brief calls them out
@@ -422,8 +427,8 @@ codebase; it was added specifically for this feature and is also usable
 for other tag-verification needs in the future.
 
 **Threat model.** This protects against: an attacker who obtains the key
-file at rest without the passphrase (they get 101 bytes of salt + nonce +
-ciphertext + tag, and PBKDF2's iteration count is the only thing between
+file at rest without the passphrase (they get a salt + nonce + ciphertext +
+tag, and PBKDF2's iteration count is the only thing between
 them and a brute-force passphrase search); tampering with or corruption of
 the key file (the HMAC tag catches any single-bit change, structural or
 not); and rainbow-table-style precomputation across multiple key files
@@ -842,24 +847,23 @@ size marker.
   new mode's forward-only cipher work (GCM) versus another mode's
   forward-and-inverse cipher work for a weaker security property (CBC),
   GCM was the better use of the same engineering effort.
-- **`Aes256Ctr` remains AES-256-only.** `SecretKey::size_bytes()` makes
-  AES-128 available to it in principle, but `Aes256Ctr`'s name, its
-  existing test/reference-vector suite, and its role as this library's
-  original (still supported) unauthenticated mode were left untouched;
-  `AesGcm` is the one construction that dispatches on key size.
-- **`save_to_file_encrypted`/`load_from_file_encrypted` (bonus 3.4) remain
-  AES-256-only.** The wrapped-key format wraps the full `kKeySizeBytes` (32)
-  of `bytes_` unconditionally; for an AES-128 key that would silently
-  include the 16 unused-but-random bytes past its logical end as if they
-  were key material, and `load_from_file_encrypted` always reconstructs a
-  `KeySize::Aes256` key on the way back out — so an AES-128 key's round
-  trip through that format would silently fabricate 16 bytes of "key" that
-  were never part of the original. `save_to_file_encrypted` now guards
-  against this explicitly (`throw LimitError` for a non-AES-256 key)
-  rather than leaving it as a silent correctness bug. Extending the
-  wrapped-key format itself to support AES-128 (its own size marker, and a
-  variable-length wrapped-key field instead of the current fixed 32 bytes)
-  is future work, not attempted in this pass.
+- **`Aes256Ctr` now dispatches on key size, same as `AesGcm`.** It kept its
+  original name for API stability (the same way `AesGcm` isn't named
+  `Aes256Gcm`), but `encrypt_block()` now checks `key.size_bytes()` and
+  calls the AES-128 or AES-256 backend accordingly, so an AES-128
+  `SecretKey` works with CTR end to end.
+- **`save_to_file_encrypted`/`load_from_file_encrypted` (bonus 3.4) now
+  support both key sizes.** The wrapped-key format was bumped to version 2:
+  a 1-byte key-size marker (16 or 32) follows the version byte, and the
+  wrapped-key field is now `key_size` bytes instead of a fixed 32 — only
+  the caller's own key's logical bytes are ever wrapped and persisted, not
+  the unused-but-random padding past an AES-128 key's logical end. The
+  wrapping key derived from the passphrase is still always AES-256
+  regardless of the size of the key being wrapped. Version 1 (the old
+  fixed 101-byte, AES-256-only layout) is no longer accepted — no real
+  persisted files exist outside this repo's own tests, so this is a clean
+  break, not a compat shim (the same precedent `key.cpp`'s own version-2
+  plain-key-file format already set).
 
 This section's design decisions were informed by:
 

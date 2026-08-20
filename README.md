@@ -230,9 +230,13 @@ passphrase, iterations)` and `load_from_file_encrypted(path, passphrase)`
 implement PBKDF2-HMAC-SHA256 key derivation (per RFC 8018, OWASP-recommended
 600,000 iterations) with AES-256-CTR encryption and HMAC-SHA256 authentication
 (encrypt-then-MAC, constant-time tag verification). The wrapped-key file format
-is a fixed 101-byte structure: magic "AESW", version, 128-bit random salt,
-iteration count, fresh nonce, wrapped ciphertext, and HMAC tag. Design verified
-against NIST SP 800-132, age encryption specification, and OpenSSH's bcrypt_pbkdf.
+is a version-2, `70 + key_size`-byte structure: magic "AESW", version, key-size
+marker (16 or 32, matching the wrapped key's own size), 128-bit random salt,
+iteration count, fresh nonce, wrapped ciphertext, and HMAC tag — the wrapping
+key derived from the passphrase is always AES-256, but only the caller's own
+key's logical bytes are ever wrapped, so this works for both AES-128 and
+AES-256 keys. Design verified against NIST SP 800-132, age encryption
+specification, and OpenSSH's bcrypt_pbkdf.
 
 **Bonus 3.5 — Key generation ergonomics**: `SecretKey` has no public raw-byte
 accessor, so an external caller has no way to accidentally copy, log, or serialize
@@ -270,10 +274,10 @@ tests independent of the full AES-GCM round trip. CBC mode was deliberately
 not implemented — GCM only needs the forward AES cipher, which both
 backends already have; CBC decryption would require implementing the AES
 inverse cipher (`InvSubBytes` etc.) in both backends for a weaker security
-property (no authentication) than GCM already provides. `Aes256Ctr` and
+property (no authentication) than GCM already provides. `Aes256Ctr` also
+dispatches on key size the same way `AesGcm` does, and
 `SecretKey::save_to_file_encrypted`/`load_from_file_encrypted` (bonus 3.4)
-remain AES-256-only; the latter now explicitly throws `LimitError` for an
-AES-128 key rather than silently mishandling one. See DESIGN.md's
+now support both key sizes too (see that section above). See DESIGN.md's
 "Additional AES modes" section for the full design rationale, including why
 GCM nonce reuse is a strictly worse failure mode than CTR's.
 
@@ -402,8 +406,9 @@ this submission. Specifically:
   OWASP itself ranks PBKDF2 below Argon2id/scrypt/bcrypt — chosen here for
   implementation simplicity given this project's no-external-dependencies
   constraint, a disclosed tradeoff), constant-time byte comparison, and
-  secure memory wiper. Encrypted key file uses 101-byte fixed format with
-  magic "AESW", random 128-bit salt, PBKDF2-derived AES and HMAC subkeys,
+  secure memory wiper. Encrypted key file uses a version-2, `70 + key_size`-byte
+  format (supporting both AES-128 and AES-256 keys) with magic "AESW", a
+  key-size marker, random 128-bit salt, PBKDF2-derived AES and HMAC subkeys,
   AES-256-CTR-wrapped key, and HMAC-SHA256 tag (verify-before-decrypt).
   A follow-up independent review pass fetched the RFC 4231/FIPS 180-4/RFC
   7914 reference vectors directly and cross-checked the implementation
