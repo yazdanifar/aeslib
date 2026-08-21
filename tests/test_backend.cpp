@@ -33,7 +33,14 @@ void clear_env(const char* name) { unsetenv(name); }
 #endif
 
 AESLIB_TEST(backend, matches_expected_backend_if_set) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
     const char* expected = std::getenv("AESLIB_EXPECTED_BACKEND");
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
     if (expected == nullptr || std::strlen(expected) == 0) {
         std::printf("   (skipped: AESLIB_EXPECTED_BACKEND not set)\n");
         return;

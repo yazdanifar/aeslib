@@ -22,6 +22,15 @@ namespace aeslib::detail {
 
 #if AESLIB_HAVE_X86_INTRINSICS
 
+// __m128i carries a vector_size/alignment attribute that GCC drops when it's
+// used as std::array's template argument, and then warns about the attribute
+// it itself ignored ([-Wignored-attributes]) — a known GCC quirk with no
+// effect on the actual alignment/codegen here, so silenced for this file
+// rather than worked around with a wrapper type.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic ignored "-Wignored-attributes"
+#endif
+
 namespace {
 
 constexpr int kNumRoundKeys = 15; // AES-256: 14 rounds + 1 initial whitening key

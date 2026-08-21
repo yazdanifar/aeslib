@@ -165,7 +165,6 @@ void SecretKey::save_to_file_encrypted(const std::filesystem::path& path, std::s
     detail::secure_wipe(derived.data(), derived.size());
 
     // Write file: plaintext_part || tag.
-    int fd = -1;
 #if defined(_WIN32)
     HANDLE h = ::CreateFileW(path.wstring().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                               FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -182,7 +181,7 @@ void SecretKey::save_to_file_encrypted(const std::filesystem::path& path, std::s
         throw IoError("failed to write encrypted key file: " + path.string());
     }
 #else
-    fd = ::open(path.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int fd = ::open(path.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) {
         throw IoError("failed to create encrypted key file: " + path.string());
     }

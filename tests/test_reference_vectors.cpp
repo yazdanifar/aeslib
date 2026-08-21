@@ -12,7 +12,7 @@
 //   iv = nonce + counter.to_bytes(4, 'big')
 //   Cipher(algorithms.AES(key), modes.CTR(iv)).encryptor()
 // Independently reproduced with:
-//   openssl enc -aes-256-ctr -e -K <key-hex> -iv <nonce-hex><00000000> \
+//   openssl enc -aes-256-ctr -e -K <key-hex> -iv <nonce-hex><00000000>
 //     -in plaintext.bin -out ciphertext.bin -nopad
 
 #include <cstddef>

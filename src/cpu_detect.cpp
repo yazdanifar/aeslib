@@ -177,7 +177,17 @@ Backend active_backend() {
     // can only downgrade Hardware -> Software, never force Software ->
     // Hardware, since the latter would call real hardware AES instructions
     // on a CPU that may not actually support them and fault. See DESIGN.md.
+    // std::getenv is fine here: single-threaded read of a testing-only
+    // variable at process start, well before any std::setenv could race it.
+    // MSVC's _dupenv_s alternative would need heap allocation for no benefit.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
     const char* force_software = std::getenv("AESLIB_FORCE_SOFTWARE");
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
     if (force_software != nullptr && std::strcmp(force_software, "") != 0 && std::strcmp(force_software, "0") != 0) {
         return Backend::Software;
     }

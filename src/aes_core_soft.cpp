@@ -76,6 +76,17 @@ namespace {
 
 constexpr int kNb = kScheduleNb; // words per state block
 
+// GCC's -Warray-bounds misfires here: at -O2 it identical-code-folds this
+// template's Nr=10 (AES-128) and Nr=14 (AES-256) instantiations, since their
+// generated code is identical, then checks the folded body's accesses
+// against only one of the two schedule sizes. `round` is always in
+// [0, Nr] and kNb*(round+1) <= kNb*(Nr+1) == schedule.size(), so the access
+// is in bounds for both instantiations; this is a false positive, not a
+// real out-of-bounds risk.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+#endif
 template <int Nr>
 void add_round_key(std::array<std::uint8_t, 16>& state, const std::array<Word, kNb*(Nr + 1)>& schedule, int round) {
     for (int c = 0; c < kNb; ++c) {
@@ -85,6 +96,9 @@ void add_round_key(std::array<std::uint8_t, 16>& state, const std::array<Word, k
         }
     }
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 void sub_bytes(std::array<std::uint8_t, 16>& state) {
     for (auto& b : state) b = ct_sbox(b);
