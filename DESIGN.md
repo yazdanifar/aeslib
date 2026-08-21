@@ -100,7 +100,9 @@ flowchart LR
     HW -->|riscv64| RISCV
 ```
 
-**Verifying dispatch is real.** CI (`.github/workflows/ci.yml`) proves the
+### Verifying dispatch is real, not assumed
+
+CI (`.github/workflows/ci.yml`) proves the
 *same binary* is correct with and without hardware AES: a `linux-x86_64` job
 builds natively on real AES-NI hardware and uploads the binaries; `qemu-aes-on`
 / `qemu-aes-off` run that exact artifact under QEMU CPU models with AES-NI
@@ -115,7 +117,9 @@ lacking the extension — that gap is closed by the dispatch logic being
 simple enough to read completely, and by the native-hardware jobs testing
 real detection against real silicon.
 
-**Functional self-verification.** A capability flag can lie — under-report a
+### Functional self-verification of the hardware path
+
+A capability flag can lie — under-report a
 working extension, or (in a hypervisor/emulator/erratum case) claim support
 for an instruction it doesn't execute correctly. `cpu::has_hw_aes()` treats
 the OS-level flag as necessary but not sufficient: once it's set, the
@@ -129,7 +133,9 @@ production code) forces the software path for testing it on hardware-capable
 machines; there's no `FORCE_HARDWARE`, since forcing an unsupported
 instruction would `SIGILL`.
 
-**Constant-time software S-box.** A textbook `kSBox[secret_byte]` lookup is a
+### Constant-time software S-box
+
+A textbook `kSBox[secret_byte]` lookup is a
 classical cache-timing side channel. `src/aes_core_soft.cpp`'s `ct_sbox()`
 instead computes the substitution via GF(2^8) inversion (`x^254`, a
 fixed-exponent square-and-multiply chain) plus the FIPS-197 affine
