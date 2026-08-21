@@ -150,6 +150,20 @@ cmake --build build-san -j
 ctest --test-dir build-san --output-on-failure
 ```
 
+### ISA-isolation check
+
+`scripts/verify_isa_isolation.sh` disassembles the built object files and
+confirms AES-NI / AArch64 Crypto Extensions / RV64 Zkne instructions only
+ever appear in the one translation unit each is scoped to in
+`CMakeLists.txt` — the property that makes runtime hardware dispatch safe
+across machines in the first place (see
+[DESIGN.md](DESIGN.md#1-cryptography-core)). Needs `objdump` or
+`llvm-objdump` on `PATH`; run it after building:
+
+```sh
+scripts/verify_isa_isolation.sh build
+```
+
 ## Fuzzing
 
 `fuzz/` has three [libFuzzer](https://llvm.org/docs/LibFuzzer.html) harnesses

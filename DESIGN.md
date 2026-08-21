@@ -107,6 +107,19 @@ instruction outside those three files, and each is only ever called after
 `cpu::has_hw_aes()` has confirmed the corresponding instructions are safe to
 execute.
 
+That last claim — no hardware-AES instruction outside the three guarded
+files — is checked, not just asserted: `scripts/verify_isa_isolation.sh`
+disassembles every object file `aeslib` builds to and fails if an AES-NI /
+AArch64 Crypto Extensions / RV64 Zkne opcode shows up anywhere except its
+one designated translation unit. CI's dual-`-cpu` QEMU runs (§7) already
+prove runtime dispatch *behaves* correctly on both capable and incapable
+hosts; this script proves the mechanism *why* that's true — the instructions
+genuinely aren't compiled in anywhere they could run unguarded — by reading
+the actual machine code rather than trusting the `set_source_files_properties`
+scoping in `CMakeLists.txt` to have been applied correctly everywhere.
+Run it after a build: `scripts/verify_isa_isolation.sh [build-dir]` (defaults
+to `build`); it needs `objdump` or `llvm-objdump` on `PATH`.
+
 `aes_core_hw.cpp` is the single seam that knows there are now three possible
 hardware backends, never more than one real in a given build: it exposes
 arch-neutral `aesNNN_encrypt_block_hw()` wrappers implemented purely as
