@@ -29,6 +29,7 @@ jobs:
           path: |
             build/tests/aeslib_tests
             build/aes_harness
+            build/libaeslib_c.so
 
   # Runs the SAME binary built above under qemu-x86_64 with an emulated CPU
   # model that advertises AES-NI, and asserts (via AESLIB_EXPECTED_BACKEND,
@@ -42,12 +43,15 @@ jobs:
           name: linux-x86_64-binaries
       - name: Install qemu-user-static
         run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
-      - run: chmod +x tests/aeslib_tests aes_harness
+      - run: chmod +x tests/aeslib_tests aes_harness libaeslib_c.so
       - name: Run tests under qemu -cpu Westmere (AES-NI present)
         env:
           AESLIB_EXPECTED_BACKEND: hardware
+          LD_LIBRARY_PATH: .
         run: qemu-x86_64-static -cpu Westmere tests/aeslib_tests
       - name: Run harness under qemu -cpu Westmere
+        env:
+          LD_LIBRARY_PATH: .
         run: qemu-x86_64-static -cpu Westmere aes_harness
 
   # Same binary again, this time under a CPU model with AES-NI masked off —
@@ -66,12 +70,15 @@ jobs:
           name: linux-x86_64-binaries
       - name: Install qemu-user-static
         run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
-      - run: chmod +x tests/aeslib_tests aes_harness
+      - run: chmod +x tests/aeslib_tests aes_harness libaeslib_c.so
       - name: Run tests under qemu -cpu Nehalem (no AES-NI)
         env:
           AESLIB_EXPECTED_BACKEND: software
+          LD_LIBRARY_PATH: .
         run: qemu-x86_64-static -cpu Nehalem tests/aeslib_tests
       - name: Run harness under qemu -cpu Nehalem
+        env:
+          LD_LIBRARY_PATH: .
         run: qemu-x86_64-static -cpu Nehalem aes_harness
 
   # Cross-compiles for aarch64 and runs the result under qemu-aarch64 -cpu
