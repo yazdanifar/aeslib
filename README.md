@@ -262,6 +262,7 @@ key.save_to_file("data.key");
 
 `.github/workflows/ci.yml` runs on every push/PR:
 
+<!-- markdownlint-disable MD013 -->
 | Job | What it runs |
 | --- | --- |
 | `linux-x86_64` | Native build + test (GCC), real AES-NI hardware |
@@ -271,6 +272,7 @@ key.save_to_file("data.key");
 | `qemu-aarch64` | Cross-compiled aarch64 build, run under emulation |
 | `macos-arm64` / `linux-arm64-native` | Native build + test on real ARM64 hardware |
 | `qemu-riscv64` | Cross-compiled riscv64 build, run under emulation |
+<!-- markdownlint-enable MD013 -->
 
 The `qemu-aes-on`/`qemu-aes-off` pair is what makes brief 2.2's "same
 binary, correct on both a capable and an incapable machine" requirement
@@ -288,6 +290,7 @@ why it's built the way it is lives in DESIGN.md's "Bonus objectives"
 section, linked per row below; this table is only the checklist and the test
 suite to look at.
 
+<!-- markdownlint-disable MD013 -->
 | Brief item | What | Design | Tests |
 | --- | --- | --- | --- |
 | 3.1 Unit tests | CTest suite under `tests/` | (this file, "Unit tests" above) | — |
@@ -300,6 +303,7 @@ suite to look at.
 | 3.8 Foreign-language interface | C ABI (`capi.h`) + Python `ctypes` binding | [Foreign-language interface](DESIGN.md#foreign-language-interface) | `aeslib.capi`, `aeslib.capi_python` |
 | 3.9 Anything else | Sanitizer builds, constant-time S-box, forced-path CI matrix | [Constant-time software S-box](DESIGN.md#constant-time-software-s-box) | see "Continuous integration" above |
 | 3.10 Using CMake | CMake is the sole build system | — | — |
+<!-- markdownlint-enable MD013 -->
 
 ## AI tool usage disclosure
 

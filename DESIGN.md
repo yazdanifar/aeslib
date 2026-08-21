@@ -62,8 +62,9 @@ Keys and nonces are generated via the OS's native CSPRNG (`BCryptGenRandom`
 on Windows, `getrandom(2)` on Linux, `arc4random_buf` elsewhere,
 `src/csprng.cpp`) — never `rand()`, `std::mt19937`, or any other
 non-cryptographic PRNG, anywhere in the key/nonce path. See "Nonce/IV
-strategy" (§2) below for how the nonce itself is constructed and why a fresh
-random value per encryption was chosen over a persisted counter.
+strategy" ([§2](#2-nonceiv-strategy)) below for how the nonce itself is
+constructed and why a fresh random value per encryption was chosen over a
+persisted counter.
 
 ### AES-256-CTR and the hardware/software split
 
@@ -111,11 +112,12 @@ That last claim — no hardware-AES instruction outside the three guarded
 files — is checked, not just asserted: `scripts/verify_isa_isolation.sh`
 disassembles every object file `aeslib` builds to and fails if an AES-NI /
 AArch64 Crypto Extensions / RV64 Zkne opcode shows up anywhere except its
-one designated translation unit. CI's dual-`-cpu` QEMU runs (§7) already
-prove runtime dispatch *behaves* correctly on both capable and incapable
-hosts; this script proves the mechanism *why* that's true — the instructions
-genuinely aren't compiled in anywhere they could run unguarded — by reading
-the actual machine code rather than trusting the `set_source_files_properties`
+one designated translation unit. CI's dual-`-cpu` QEMU runs
+([§7](#7-testproduction-isolation)) already prove runtime dispatch
+*behaves* correctly on both capable and incapable hosts; this script proves
+the mechanism *why* that's true — the instructions genuinely aren't
+compiled in anywhere they could run unguarded — by reading the actual
+machine code rather than trusting the `set_source_files_properties`
 scoping in `CMakeLists.txt` to have been applied correctly everywhere.
 Run it after a build: `scripts/verify_isa_isolation.sh [build-dir]` (defaults
 to `build`); it needs `objdump` or `llvm-objdump` on `PATH`.
@@ -240,6 +242,7 @@ inside the same function-local `static` that already memoizes the raw
 capability read, so it costs two block encryptions at process startup, not
 per call.
 
+<!-- markdownlint-disable MD013 -->
 ```mermaid
 flowchart TD
     A["active_backend() called"] --> B{"Capability bit set?\nCPUID / HWCAP / sysctlbyname /\nIsProcessorFeaturePresent / hwprobe"}
@@ -249,6 +252,7 @@ flowchart TD
     D -- "no" --> S
     D -- "yes" --> H["Backend::Hardware"]
 ```
+<!-- markdownlint-enable MD013 -->
 
 Both the capability read and this functional check happen once, memoized in
 the same `static`; the result is what every subsequent `Aes256Ctr`/`AesGcm`
@@ -434,19 +438,19 @@ the ability to read files written by an older library version.
 
 Ciphertext container (`.aesc`), all integers little-endian:
 
-| bytes | field      | meaning                              |
-|-------|------------|---------------------------------------|
-| 0–3   | magic      | ASCII `"AESC"`                        |
-| 4     | version    | format version, currently `1`         |
-| 5–16  | nonce      | 12-byte CTR nonce                     |
-| 17–24 | ct_len     | `uint64_t`, ciphertext length in bytes|
-| 25–   | ciphertext | `ct_len` bytes                        |
+| bytes | field      | meaning                                |
+|-------|------------|----------------------------------------|
+| 0–3   | magic      | ASCII `"AESC"`                         |
+| 4     | version    | format version, currently `1`          |
+| 5–16  | nonce      | 12-byte CTR nonce                      |
+| 17–24 | ct_len     | `uint64_t`, ciphertext length in bytes |
+| 25–   | ciphertext | `ct_len` bytes                         |
 
 GCM ciphertext container (`.aesg`, bonus — see "Additional AES modes"),
 using a distinct magic so the two file types can't be confused:
 
 | bytes | field      | meaning                                |
-|-------|------------|-----------------------------------------|
+|-------|------------|----------------------------------------|
 | 0–3   | magic      | ASCII `"AESG"`                         |
 | 4     | version    | format version, currently `1`          |
 | 5–16  | nonce      | 12-byte GCM nonce                      |
@@ -496,15 +500,17 @@ Nothing in the public API uses output-parameter error codes.
 - **Nonce birthday bound.** Random 96-bit nonces mean collision risk becomes
   non-negligible only after ~2^48 encryptions under one key — far beyond
   this library's expected single-key volume, but a real bound rather than
-  "impossible" (§2). For `AesGcm` specifically, NIST SP 800-38D §8.3's own
-  recommended limit is far more conservative than that: 2^32 encryptions per
-  key. This one *is* enforced, per-`SecretKey`-object, via
-  `detail::consume_gcm_invocation`/`check_gcm_invocation_count` (§2) —
+  "impossible" ([§2](#2-nonceiv-strategy)). For `AesGcm` specifically, NIST
+  SP 800-38D §8.3's own recommended limit is far more conservative than
+  that: 2^32 encryptions per key. This one *is* enforced,
+  per-`SecretKey`-object, via
+  `detail::consume_gcm_invocation`/`check_gcm_invocation_count`
+  ([§2](#2-nonceiv-strategy)) —
   `AesGcm::encrypt()` throws `LimitError` past 2^32 calls on the same key
   object, though (as noted there) the counter doesn't survive a process
   restart or a fresh `SecretKey` reloaded from the same key file.
 - **Software-path cache timing** is addressed, not just documented: see
-  "Constant-time software S-box" (§1).
+  "Constant-time software S-box" ([§1](#1-cryptography-core)).
 - **Symlink-planting on file writes** is addressed, not just documented: every
   write path — `SecretKey::save_to_file`/`save_to_file_encrypted` and
   `write_file` (the shared helper behind `save_container`/`save_gcm_container`)
@@ -523,8 +529,9 @@ Nothing in the public API uses output-parameter error codes.
 ## 7. Test/production isolation
 
 - The `AESLIB_EXPECTED_BACKEND` environment variable CI uses to assert
-  which dispatch path ran (§1) is read in exactly one place in the entire
-  codebase: `tests/test_backend.cpp`. No `getenv` call exists anywhere
+  which dispatch path ran ([§1](#1-cryptography-core)) is read in exactly
+  one place in the entire codebase: `tests/test_backend.cpp`. No `getenv`
+  call exists anywhere
   under `src/` or `include/` — production dispatch (`cpu::has_hw_aes()`,
   `active_backend()`) is driven purely by the hardware-capability check and
   cannot be steered by any environment variable.
@@ -548,16 +555,18 @@ Nothing in the public API uses output-parameter error codes.
 ## Bonus objectives
 
 All optional and additive per brief §3 — none of this is required for a
-complete submission (§6/§7 above already stand on their own). One subsection
-per item attempted, numbered to match the brief's own §3.*.
+complete submission ([§6](#6-known-limitations--threat-model)/
+[§7](#7-testproduction-isolation) above already stand on their own). One
+subsection per item attempted, numbered to match the brief's own §3.*.
 
 ### Additional architectures: ARM AArch64 and RISC-V
 
 The dispatch model deliberately isolates *all* architecture-specific code
 behind one interface: functions with an identical signature
 (`Block aesNNN_encrypt_block_*(const SecretKey&, const Block&)`) plus a
-one-function CPU-capability check — the isolation described in §1. Adding
-ARM support meant three touch points, none of which reached
+one-function CPU-capability check — the isolation described in
+[§1](#1-cryptography-core). Adding ARM support meant three touch points,
+none of which reached
 `aes256_ctr.cpp`/`aes_gcm.cpp` beyond a one-line `_ni` → `_hw` rename:
 
 - **`aes_core_hw.cpp`** gained an arm64 `#elif` branch dispatching to
@@ -788,8 +797,9 @@ existing AES-256 code is untouched.
 
 **GCM design.** `AesGcm::encrypt()`/`decrypt()` follow NIST SP 800-38D: for
 a 96-bit nonce, `J0 = nonce || 0x00000001` (the same nonce||counter
-construction `Aes256Ctr` uses, §2), keystream blocks start at counter 2
-(counter 1/`J0` is reserved for encrypting the tag), and the tag is
+construction `Aes256Ctr` uses, [§2](#2-nonceiv-strategy)), keystream
+blocks start at counter 2 (counter 1/`J0` is reserved for encrypting the
+tag), and the tag is
 `E(K, J0) XOR GHASH_H(AAD, ciphertext)`. Reserving `J0` means this
 construction's per-invocation limit is 2^32-2 blocks, one less than CTR's
 2^32. `decrypt()` recomputes the expected tag and compares it via
@@ -895,8 +905,9 @@ The two operations never share key material, so a weakness in one
 primitive's use of its key can't be leveraged against the other.
 
 **Encrypt-then-MAC.** This library's AES-256-CTR is unauthenticated by
-design (§6) — CTR ciphertext is bit-flip malleable, so wrapping the raw key
-with CTR alone would let a corrupted or tampered key file silently decrypt
+design ([§6](#6-known-limitations--threat-model)) — CTR ciphertext is
+bit-flip malleable, so wrapping the raw key with CTR alone would let a
+corrupted or tampered key file silently decrypt
 to garbage with no signal. Per the
 [Encrypt-then-MAC](https://www.daemonology.net/blog/2009-06-24-encrypt-then-mac.html)
 principle, an HMAC-SHA256 tag is computed over the plaintext structure and
@@ -1335,7 +1346,7 @@ place, spanning both the core sections and the bonus objectives above — each
 is argued in more depth where cited, this is the index:
 
 - **Container format is deliberately minimal**, not maximal: magic, version,
-  nonce, length, ciphertext — no room for extra metadata beyond what §3
+  nonce, length, ciphertext — no room for extra metadata beyond what [§3](#3-on-disk-container-format)
   requires. Assumed a small, auditable, versioned format was preferable to
   guessing at fields a future version might want; the version byte is what
   makes that extensible later without a compatibility break.
@@ -1355,7 +1366,7 @@ is argued in more depth where cited, this is the index:
   is Windows-only; `libsecret` needs a running keyring daemon CI runners
   don't have). Stated as a disclosed tradeoff in "Safer key storage," not a
   silent substitution.
-- **The GCM per-key invocation counter (§2) lives on the in-memory
+- **The GCM per-key invocation counter ([§2](#2-nonceiv-strategy)) lives on the in-memory
   `SecretKey` object, not on disk.** Assumed this library's scope is a
   single process using a key for its own lifetime, not a long-running
   service needing durable usage accounting across restarts — the latter
@@ -1367,16 +1378,18 @@ is argued in more depth where cited, this is the index:
   was preferable to either skipping the third architecture or silently
   presenting it as fully hardware-verified.
 - **Nonces are random per encryption, not a persisted stateful counter**
-  (§2), accepting a birthday-bound collision risk (~2^48 for CTR, enforced
-  at 2^32 for GCM) instead of the added complexity of carrying counter
+  ([§2](#2-nonceiv-strategy)), accepting a birthday-bound collision risk
+  (~2^48 for CTR, enforced at 2^32 for GCM) instead of the added complexity
+  of carrying counter
   state across process restarts. Assumed this library's expected per-key
   volume is far below that bound, and said so as a real limit, not
-  "impossible" — see "Known limitations" (§6).
+  "impossible" — see "Known limitations" ([§6](#6-known-limitations--threat-model)).
 - **All ten Section 3 bonus items were attempted**, despite the brief's own
   stated preference for a couple of thoughtful partial attempts over
   maximal coverage. Assumed this was a reasonable call specifically because
-  the hardware/software dispatch split (§1) turned each new backend/mode
-  into an incremental addition behind an existing abstraction rather than
+  the hardware/software dispatch split ([§1](#1-cryptography-core)) turned
+  each new backend/mode into an incremental addition behind an existing
+  abstraction rather than
   new design surface — not because "more bonuses" was treated as
   inherently better. Under a materially tighter deadline, the priority
   order would have been unit tests (3.1) → safer key storage (3.4) →
