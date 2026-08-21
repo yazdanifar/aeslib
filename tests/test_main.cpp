@@ -30,6 +30,11 @@ int main(int argc, char** argv) {
             continue;
         }
         std::printf(" - %s.%s\n", test_case.suite.c_str(), test_case.name.c_str());
+        // stdout is fully buffered when not a TTY (ctest pipes it) — without
+        // this, a test that hangs or gets force-killed on timeout loses every
+        // line printed since the last flush, hiding which case actually
+        // stuck.
+        std::fflush(stdout);
         test_case.run();
         ++ran;
     }

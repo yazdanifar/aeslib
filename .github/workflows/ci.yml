@@ -245,6 +245,6 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
       - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure --timeout 120
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 20
       - name: Run harness
         run: build\Release\aes_harness.exe
