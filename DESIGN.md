@@ -41,6 +41,9 @@ src/                   implementation
   cpu_detect.cpp          runtime hardware-AES capability check (CPUID on
                         amd64; HWCAP/sysctl/IsProcessorFeaturePresent on
                         arm64; riscv_hwprobe() on riscv64, depending on OS)
+  kat_vector.hpp          FIPS-197 AES-128/256 known-answer vectors, shared
+                        by cpu_detect.cpp's functional self-verification
+                        and tests/test_aes_core.cpp
   csprng.cpp              OS CSPRNG wrapper
   sha256.cpp              from-scratch SHA-256/HMAC-SHA256/PBKDF2, used by
                         key_storage.cpp (bonus)
@@ -52,6 +55,9 @@ src/                   implementation
                         exception-to-status-code translation (bonus)
 main.cpp                end-to-end harness (see README.md)
 bindings/python/       ctypes binding + demo for capi.h (bonus)
+scripts/verify_isa_isolation.sh   disassembles built object files, checks
+                        hardware-AES instructions stay confined to their
+                        one designated translation unit each (see below)
 ```
 
 ## 1. Cryptography core
