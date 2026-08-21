@@ -46,6 +46,9 @@ __pycache__/
 *.vrb
 Challenge.pdf
 
+# Confidential challenge brief — kept locally, never tracked.
+Challenge.tex
+
 # macOS / Windows filesystem noise
 .DS_Store
 Thumbs.db
