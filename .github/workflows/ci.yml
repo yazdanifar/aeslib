@@ -13,6 +13,7 @@ jobs:
   # claim literal rather than just built-twice-and-hoped.
   linux-x86_64:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - name: Configure
@@ -47,6 +48,7 @@ jobs:
   qemu-aes-on:
     needs: linux-x86_64
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/download-artifact@v5
         with:
@@ -71,6 +73,7 @@ jobs:
   qemu-aes-off:
     needs: linux-x86_64
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/download-artifact@v5
         with:
@@ -111,6 +114,7 @@ jobs:
   # "closed by code simplicity, not by execution" argument in DESIGN.md.
   qemu-aarch64:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - name: Install aarch64 cross toolchain and qemu-user-static
@@ -158,6 +162,7 @@ jobs:
   # Software is the only truthful answer for active_backend() to give.
   qemu-riscv64:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - name: Install riscv64 cross toolchain and qemu-user-static
@@ -173,32 +178,6 @@ jobs:
       - name: Run harness under qemu-riscv64 -cpu max,zkne=true
         run: qemu-riscv64-static -cpu max,zkne=true -L /usr/riscv64-linux-gnu build-riscv64/aes_harness
 
-  # Real, non-emulated RISC-V hardware via the RISE RISC-V Runners free CI
-  # service (physical Scaleway EM-RV1 servers, SOPHGO SG2044 chip) — the
-  # riscv64 complement to macos-arm64/linux-arm64-native below. Requires the
-  # RISE GitHub App to be installed on this repository first; see
-  # https://riseproject.dev/2026/03/24/announcing-the-rise-risc-v-runners-free-native-risc-v-ci-on-github/
-  #
-  # Deliberately does NOT set AESLIB_EXPECTED_BACKEND=hardware the way
-  # linux-arm64-native does: unlike the AArch64 Crypto Extensions (universal
-  # on real silicon for years), it is not yet confirmed whether the SG2044
-  # chip implements Zkne/Zknd in hardware. This job proves the build and the
-  # correctly-selected backend (whichever `active_backend()` reports) work on
-  # real riscv64 hardware; whether that backend is Hardware or the Software
-  # fallback is left for this job's own output to reveal.
-  riscv64-native:
-    runs-on: ubuntu-24.04-riscv
-    steps:
-      - uses: actions/checkout@v5
-      - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
-      - name: Build
-        run: cmake --build build -j
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
-      - name: Run harness
-        run: ./build/aes_harness
-
   # Two genuine, non-emulated ARM64 machines — the real-hardware complement
   # to the QEMU legs above (which prove dispatch/correctness under emulation
   # but can't prove real silicon behaves the same way). Both run natively, no
@@ -207,6 +186,7 @@ jobs:
   # Linux runners both implement the AArch64 Crypto Extensions.
   macos-arm64:
     runs-on: macos-14
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - name: Configure
@@ -222,6 +202,7 @@ jobs:
 
   linux-arm64-native:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - name: Configure
@@ -237,6 +218,7 @@ jobs:
 
   linux-sanitizers:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       CC: clang
       CXX: clang++
@@ -255,6 +237,7 @@ jobs:
   # src/csprng.cpp, <intrin.h>/__cpuid in src/cpu_detect.cpp) — see brief 2.5.
   windows-msvc:
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - name: Configure
@@ -262,6 +245,6 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
       - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 120
       - name: Run harness
         run: build\Release\aes_harness.exe

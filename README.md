@@ -284,9 +284,9 @@ per item rather than repeated here.
   - `src/aes_core_riscv.cpp` — RV64 scalar crypto (`Zkne`) intrinsics
     (`aes64esm`/`aes64es` for the round transform, `aes64ks1i`/`aes64ks2`
     for the key schedule), detected via the `riscv_hwprobe()` syscall.
-    Tests: `aeslib.aes_core` plus the `qemu-riscv64`/`riscv64-native` CI
-    jobs — the latter on real riscv64 hardware via the RISE RISC-V Runners
-    service.
+    Tests: `aeslib.aes_core` plus the `qemu-riscv64` CI job (a native-hardware
+    leg via the RISE RISC-V Runners service was tried and dropped — see
+    DESIGN.md for why).
 
   Design: [Additional architectures: ARM AArch64 and RISC-V](DESIGN.md#additional-architectures-arm-aarch64-and-risc-v).
 - **3.3 Additional AES modes.** AES-128 key support plus `AesGcm` (NIST SP

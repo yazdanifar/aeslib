@@ -611,14 +611,16 @@ only file compiled with `-march=rv64gc_zkne`
 rationale as `-maes`/`-march=armv8-a+crypto`, though note RISC-V's `-march=`
 *replaces* rather than extends the base ISA string on GCC/Clang, so this
 assumes the `riscv64-linux-gnu` cross toolchain's default `rv64gc` base
-(`cmake/riscv64-linux-gnu.cmake`). Two new CI legs test it, mirroring the
-arm64 emulated/native pair: `qemu-riscv64` (cross-compiled, run under
-`qemu-riscv64-static -cpu max,zkne=true`) and `riscv64-native`, which uses
-the [RISE RISC-V
+(`cmake/riscv64-linux-gnu.cmake`). One new CI leg tests it: `qemu-riscv64`
+(cross-compiled, run under `qemu-riscv64-static -cpu max,zkne=true`).
+
+A native-hardware leg via the [RISE RISC-V
 Runners](https://riseproject.dev/2026/03/24/announcing-the-rise-risc-v-runners-free-native-risc-v-ci-on-github/)
-free-CI service for real, non-emulated riscv64 hardware (physical Scaleway
-EM-RV1 servers, SOPHGO SG2044 chip) — requires installing RISE's GitHub App
-on the repo, a one-time manual step outside this codebase.
+service was tried and dropped: it needs a self-hosted runner this private
+repo can't reliably get, and an unregistered runner leaves the job queued
+forever with no timeout. `qemu-riscv64` already proves the real Zkne
+instruction sequence is correct, which is enough to back brief 3.2's
+third-architecture claim without a live hardware leg.
 
 **A second honest gap, specific to this one CI runner's QEMU package
 version.** `qemu-riscv64` needs `zkne=true` (`-cpu max` alone doesn't enable
@@ -641,17 +643,13 @@ instruction sequence every run, even though the ordinary
 dispatch-through-`active_backend()` path can't be asserted there.
 
 **An honest gap this backend does not close: silicon crypto-extension
-support on the native CI leg is unconfirmed.** The AArch64 Crypto
-Extensions have been close to universal on real ARM64 silicon for years,
-which is why `linux-arm64-native` asserts `AESLIB_EXPECTED_BACKEND=hardware`
-unconditionally. RISC-V's crypto extensions are new, and plenty of shipping
-RISC-V server chips implement only the base ISA — whether the SG2044 chip
-underlying the RISE runners is one of the exceptions isn't yet established.
-`riscv64-native`'s CI job therefore does *not* assert a specific backend;
-it proves the build and whichever backend `riscv_hwprobe()` correctly
-selects both work on real riscv64 hardware, and leaves "is that backend
-Hardware or the Software fallback" for the job's own output to answer,
-rather than asserting either way without having actually looked.
+support has not been confirmed on real hardware.** Unlike the AArch64
+Crypto Extensions (close to universal on real ARM64 silicon, hence
+`linux-arm64-native` asserting `AESLIB_EXPECTED_BACKEND=hardware`), RISC-V's
+are new and plenty of shipping server chips implement only the base ISA.
+Without a native riscv64 CI leg, whether `active_backend()` reports Hardware
+on real silicon is unverified — `qemu-riscv64` only proves the instruction
+sequence itself is correct under emulation.
 
 ### Additional AES modes: AES-128 + AES-GCM
 
