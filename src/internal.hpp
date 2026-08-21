@@ -65,6 +65,17 @@ Block ghash(const Block& h, const std::vector<std::byte>& aad, const std::vector
 // without allocating a real ~64 GiB vector.
 void validate_block_count(std::size_t plaintext_len);
 
+// NIST SP 800-38D §8.3's recommended limit on the number of AES-GCM
+// encryptions performed under one key when nonces are chosen at random: 2^32
+// invocations, chosen so the cumulative probability of any nonce collision
+// stays below 2^-32 — a tighter bar than the generic ~2^48 birthday-collision
+// point (see DESIGN.md). Exposed here as a pure function of the prior
+// invocation count (not tied to a real SecretKey) so the boundary can be unit
+// tested directly, the same reason validate_block_count above takes a size
+// rather than a buffer.
+inline constexpr std::uint64_t kGcmInvocationLimit = std::uint64_t{1} << 32;
+void check_gcm_invocation_count(std::uint64_t prior_invocations);
+
 // SHA-256 per FIPS 180-4.
 std::array<std::byte, 32> sha256(const std::byte* data, std::size_t len);
 

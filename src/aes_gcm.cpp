@@ -77,6 +77,18 @@ void validate_block_count(std::size_t plaintext_len) {
     }
 }
 
+} // namespace
+
+void detail::check_gcm_invocation_count(std::uint64_t prior_invocations) {
+    if (prior_invocations >= detail::kGcmInvocationLimit) {
+        throw LimitError(
+            "this SecretKey has been used for AesGcm::encrypt() more than NIST SP 800-38D section 8.3's "
+            "recommended 2^32-per-key limit for random GCM nonces; rotate to a new key");
+    }
+}
+
+namespace {
+
 Block xor_blocks(const Block& a, const Block& b) {
     Block out{};
     for (std::size_t i = 0; i < kBlockSizeBytes; ++i) out[i] = static_cast<std::byte>(a[i] ^ b[i]);
@@ -103,6 +115,10 @@ Block compute_tag(const SecretKey& key, const std::array<std::byte, kGcmNonceSiz
 GcmContainer AesGcm::encrypt(const SecretKey& key, const std::vector<std::byte>& plaintext,
                               const std::vector<std::byte>& aad) {
     validate_block_count(plaintext.size());
+    // Enforce NIST SP 800-38D §8.3's per-key limit on random-nonce GCM
+    // encryptions *before* spending a random nonce on this call, not after —
+    // see detail::check_gcm_invocation_count and DESIGN.md.
+    detail::check_gcm_invocation_count(detail::consume_gcm_invocation(key));
     const auto nonce = generate_nonce();
 
     GcmContainer container;

@@ -364,3 +364,40 @@ AESLIB_TEST(gcm, container_rejects_ciphertext_length_mismatch) {
     bytes.pop_back(); // truncate ciphertext by one byte without updating ct_len
     CHECK_THROWS(aeslib::deserialize_gcm(bytes), FormatError);
 }
+
+// NIST SP 800-38D §8.3's recommended 2^32-per-key limit on random-nonce GCM
+// encryptions (see DESIGN.md and internal.hpp's kGcmInvocationLimit). Tested
+// as a pure boundary check on the prior-invocation count directly — the same
+// reason aes_core's 32-bit block-counter guard is tested via
+// detail::validate_block_count(size) rather than by actually allocating a
+// ~64 GiB buffer, doing 2^32 real encryptions here would take somewhere
+// between "very slow" and "never finishes" in a CI run.
+AESLIB_TEST(gcm, invocation_limit_accepts_count_just_under_limit) {
+    aeslib::detail::check_gcm_invocation_count(aeslib::detail::kGcmInvocationLimit - 1); // no throw
+}
+
+AESLIB_TEST(gcm, invocation_limit_rejects_count_at_limit) {
+    CHECK_THROWS(aeslib::detail::check_gcm_invocation_count(aeslib::detail::kGcmInvocationLimit), LimitError);
+}
+
+AESLIB_TEST(gcm, invocation_limit_rejects_count_past_limit) {
+    CHECK_THROWS(aeslib::detail::check_gcm_invocation_count(aeslib::detail::kGcmInvocationLimit + 1), LimitError);
+}
+
+// End-to-end: AesGcm::encrypt() actually advances the same SecretKey's
+// counter across repeated calls, rather than the check above testing dead
+// code. detail::consume_gcm_invocation() returns the pre-increment count, so
+// three prior encrypt() calls (from key_from_hex's own AesGcm::encrypt in
+// setup, if any, plus these) should read back as consecutive increasing
+// values.
+AESLIB_TEST(gcm, encrypt_advances_this_keys_gcm_invocation_counter) {
+    const SecretKey key = SecretKey::generate(KeySize::Aes256);
+    const std::uint64_t before = aeslib::detail::consume_gcm_invocation(key);
+    (void)AesGcm::encrypt(key, {std::byte{1}});
+    (void)AesGcm::encrypt(key, {std::byte{2}});
+    const std::uint64_t after = aeslib::detail::consume_gcm_invocation(key);
+    // `before`/`after` themselves each consume one invocation too, so two
+    // intervening encrypt() calls plus the `before` probe means `after` is
+    // exactly 3 higher than `before`.
+    CHECK_EQ(after, before + 3);
+}

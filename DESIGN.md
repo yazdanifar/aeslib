@@ -256,6 +256,53 @@ call (same birthday-bound reasoning as CTR) for exactly this reason: a
 random nonce has the same collision probability as CTR's, but the
 consequence of a collision is qualitatively worse for GCM.
 
+**GCM's per-key usage limit is tighter than the raw birthday bound.**
+[NIST SP 800-38D §8.3](https://nvlpubs.nist.gov/nistpubs/legacy/sp/nistspecialpublication800-38d.pdf)
+states it directly: "the probability that the [GCM] authenticated
+encryption function ... is invoked with the same IV ... and the same key
+... more than once shall be exceeded with probability no greater than
+2^-32" for randomly generated 96-bit IVs, which — by the standard birthday
+calculation for a 96-bit space — caps the *recommended* number of
+encryptions under one key at **2^32**, not the ~2^48 figure that's the
+right answer to "when does a collision become more likely than not."
+Those are two different questions: ~2^48 is where two random 96-bit values
+are more likely than not to collide at least once; 2^32 is where the
+*cumulative probability of any collision at all* first exceeds a
+cryptographically negligible 2^-32. NIST's normative limit uses the
+stricter bar deliberately, because GCM's failure mode on a nonce collision
+is a full key compromise (the forbidden attack above), not merely a
+confidentiality leak the way it is for plain CTR — a risk profile that
+warrants a safety margin, not "solve for the point of even odds."
+
+This library enforces that per-key limit, rather than leaving it as a
+documented-only caller responsibility: each `SecretKey` carries a private,
+`mutable std::atomic<std::uint64_t>` invocation counter
+(`detail::consume_gcm_invocation`, `include/aeslib/key.hpp`/`src/key.cpp`),
+incremented once per `AesGcm::encrypt()` call and checked against
+`detail::kGcmInvocationLimit` (`src/internal.hpp`) *before* that call spends
+a random nonce; the 2^32+1th encryption under the same `SecretKey` object
+throws `LimitError` instead of proceeding. This is deliberately scoped to
+match the "random nonce, no persisted counter" design chosen above, not a
+reversal of it: the counter lives on the in-memory `SecretKey` object (and
+moves with it, since move is the only way to relocate one), so it bounds
+usage within one object's lifetime, not across process restarts or
+independent `SecretKey` instances loaded from the same key file — closing
+the *in-process* runaway-usage gap (a long-lived server calling
+`AesGcm::encrypt()` on one loaded key far past 2^32 times) without taking on
+the added complexity of persisting nonce-counter state across restarts,
+which the earlier "why nonce reuse is strictly worse under GCM" reasoning
+already judged not worth it for this library's scope. Tested at the
+boundary directly via `detail::check_gcm_invocation_count(std::uint64_t)`
+(`tests/test_gcm.cpp`'s `invocation_limit_*` tests) rather than by actually
+performing 2^32 encryptions, the same reason the CTR/GCM block-counter guard
+is tested via `detail::validate_block_count(size)` on a plain size rather
+than a real ~64 GiB buffer.
+
+`Aes256Ctr`'s birthday-bound reasoning is unaffected by any of this — CTR's
+failure mode on nonce reuse is the strictly milder XOR-of-plaintexts leak,
+so NIST's stricter GCM-specific limit doesn't apply to it, and `Aes256Ctr`
+carries no equivalent counter.
+
 ## 3. On-disk container format
 
 Key and ciphertext are always written to **separate files** — the
@@ -328,7 +375,13 @@ Nothing in the public API uses output-parameter error codes.
 - **Nonce birthday bound.** Random 96-bit nonces mean collision risk becomes
   non-negligible only after ~2^48 encryptions under one key — far beyond
   this library's expected single-key volume, but a real bound rather than
-  "impossible" (§2).
+  "impossible" (§2). For `AesGcm` specifically, NIST SP 800-38D §8.3's own
+  recommended limit is far more conservative than that: 2^32 encryptions per
+  key. This one *is* enforced, per-`SecretKey`-object, via
+  `detail::consume_gcm_invocation`/`check_gcm_invocation_count` (§2) —
+  `AesGcm::encrypt()` throws `LimitError` past 2^32 calls on the same key
+  object, though (as noted there) the counter doesn't survive a process
+  restart or a fresh `SecretKey` reloaded from the same key file.
 - **Software-path cache timing** is addressed, not just documented: see
   "Constant-time software S-box" (§1).
 

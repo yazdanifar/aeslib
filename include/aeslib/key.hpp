@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -29,6 +30,19 @@ namespace detail {
 // The one sanctioned way for a caller to get key material out of a
 // SecretKey remains the explicit, deliberately-named save_to_file().
 const std::array<std::byte, kKeySizeBytes>& key_bytes(const SecretKey& key) noexcept;
+
+// Atomically increments `key`'s AES-GCM invocation counter and returns the
+// count *before* this increment (i.e. how many prior AesGcm::encrypt() calls
+// have already consumed a fresh random nonce under this key object). Used by
+// AesGcm::encrypt() (aes_gcm.cpp) to enforce NIST SP 800-38D §8.3's
+// recommended per-key limit on random-nonce GCM encryptions — see DESIGN.md's
+// "GCM's per-key usage limit is tighter than the raw birthday bound". The
+// count lives on the SecretKey object itself (moved along with it, reset by
+// neither copy — which is disabled — nor by reloading the same key bytes
+// from disk into a new SecretKey instance), so it bounds usage within one
+// object's lifetime, not across process restarts; see DESIGN.md for why that
+// gap is accepted rather than closed with persisted state.
+std::uint64_t consume_gcm_invocation(const SecretKey& key) noexcept;
 } // namespace detail
 
 // Move-only holder for a raw AES-256 key. Copy is disabled so a key can't be
@@ -88,6 +102,7 @@ public:
 
 private:
     friend const std::array<std::byte, kKeySizeBytes>& detail::key_bytes(const SecretKey&) noexcept;
+    friend std::uint64_t detail::consume_gcm_invocation(const SecretKey&) noexcept;
 
     SecretKey();
     void wipe() noexcept;
@@ -106,6 +121,13 @@ private:
     // branchy partial-fill logic for a harmless simplification.
     std::array<std::byte, kKeySizeBytes> bytes_{};
     KeySize size_ = KeySize::Aes256;
+    // Counts AesGcm::encrypt() calls made with this key object (see
+    // consume_gcm_invocation above). mutable: AesGcm::encrypt() takes `key`
+    // by const&, same as every other consumer, but still needs to advance
+    // this counter. Relaxed atomics are enough — this is a usage-budget
+    // counter, not a synchronization primitive guarding the key bytes
+    // themselves.
+    mutable std::atomic<std::uint64_t> gcm_invocations_{0};
 };
 
 } // namespace aeslib

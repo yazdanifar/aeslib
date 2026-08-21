@@ -40,7 +40,8 @@ KeySize SecretKey::size() const noexcept { return size_; }
 
 std::size_t SecretKey::size_bytes() const noexcept { return static_cast<std::size_t>(size_); }
 
-SecretKey::SecretKey(SecretKey&& other) noexcept : bytes_(other.bytes_) {
+SecretKey::SecretKey(SecretKey&& other) noexcept
+    : bytes_(other.bytes_), gcm_invocations_(other.gcm_invocations_.load(std::memory_order_relaxed)) {
     lock_memory();
     other.wipe();
 }
@@ -49,6 +50,7 @@ SecretKey& SecretKey::operator=(SecretKey&& other) noexcept {
     if (this != &other) {
         wipe();
         bytes_ = other.bytes_;
+        gcm_invocations_.store(other.gcm_invocations_.load(std::memory_order_relaxed), std::memory_order_relaxed);
         lock_memory();
         other.wipe();
     }
@@ -219,6 +221,10 @@ SecretKey SecretKey::load_from_file(const std::filesystem::path& path) {
 
 namespace detail {
 const std::array<std::byte, kKeySizeBytes>& key_bytes(const SecretKey& key) noexcept { return key.bytes_; }
+
+std::uint64_t consume_gcm_invocation(const SecretKey& key) noexcept {
+    return key.gcm_invocations_.fetch_add(1, std::memory_order_relaxed);
+}
 } // namespace detail
 
 } // namespace aeslib
