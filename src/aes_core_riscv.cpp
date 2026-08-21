@@ -31,11 +31,21 @@
 // sequences (round loop, AES-128/256 key schedules) follow OpenSSL's
 // rv64i_zkne_encrypt/rv64i_zkne_set_encrypt_key reference implementation
 // (crypto/aes/asm/aes-riscv64-zkn.pl), the canonical worked example of this
-// extension, adapted from inline assembly to C intrinsics.
+// extension.
+//
+// The instructions themselves are emitted via inline asm (the raw mnemonics
+// aes64es/aes64esm/aes64ks1i/aes64ks2), not <riscv_crypto.h>'s C intrinsics:
+// that header is a comparatively recent GCC/Clang addition (present in a
+// current Homebrew GCC 16, absent from Ubuntu 24.04's g++-riscv64-linux-gnu
+// package, GCC 13.3 — confirmed against this project's own qemu-riscv64 CI
+// leg) and there's no reason to require it just to reach four instructions
+// binutils has recognized as plain mnemonics since before GCC added the
+// intrinsics. The `-march=rv64gc_zkne` flag scoped to this file
+// (CMakeLists.txt) is what actually authorizes the assembler to accept
+// them; the same flag would be needed either way.
 
 #if defined(__riscv) && __riscv_xlen == 64
 #define AESLIB_HAVE_RISCV_CRYPTO_INTRINSICS 1
-#include <riscv_crypto.h>
 #else
 #define AESLIB_HAVE_RISCV_CRYPTO_INTRINSICS 0
 #endif
@@ -45,6 +55,35 @@ namespace aeslib::detail {
 #if AESLIB_HAVE_RISCV_CRYPTO_INTRINSICS
 
 namespace {
+
+// Thin inline-asm wrappers around the four Zkne instructions this backend
+// needs (see the file-level comment for why these aren't <riscv_crypto.h>
+// intrinsics). `rnum` must be a genuine assembler immediate (0x0..0xA per
+// the ISA), which is why every call site below passes a literal, never a
+// runtime variable.
+inline std::uint64_t riscv_aes64esm(std::uint64_t rs1, std::uint64_t rs2) {
+    std::uint64_t rd;
+    asm("aes64esm %0, %1, %2" : "=r"(rd) : "r"(rs1), "r"(rs2));
+    return rd;
+}
+
+inline std::uint64_t riscv_aes64es(std::uint64_t rs1, std::uint64_t rs2) {
+    std::uint64_t rd;
+    asm("aes64es %0, %1, %2" : "=r"(rd) : "r"(rs1), "r"(rs2));
+    return rd;
+}
+
+inline std::uint64_t riscv_aes64ks2(std::uint64_t rs1, std::uint64_t rs2) {
+    std::uint64_t rd;
+    asm("aes64ks2 %0, %1, %2" : "=r"(rd) : "r"(rs1), "r"(rs2));
+    return rd;
+}
+
+inline std::uint64_t riscv_aes64ks1i(std::uint64_t rs1, int rnum) {
+    std::uint64_t rd;
+    asm("aes64ks1i %0, %1, %2" : "=r"(rd) : "r"(rs1), "i"(rnum));
+    return rd;
+}
 
 struct State {
     std::uint64_t lo; // block bytes 0..7
@@ -72,13 +111,13 @@ State xor_state(const State& a, const State& b) { return State{a.lo ^ b.lo, a.hi
 // ISA's state layout — mirrors OpenSSL's `aes64esm Q2,Q0,Q1` / `aes64esm
 // Q3,Q1,Q0` pair.
 State round_middle(const State& s) {
-    return State{__riscv_aes64esm(s.lo, s.hi), __riscv_aes64esm(s.hi, s.lo)};
+    return State{riscv_aes64esm(s.lo, s.hi), riscv_aes64esm(s.hi, s.lo)};
 }
 
 // The final round: same as round_middle but SubBytes+ShiftRows only (no
 // MixColumns), matching every other backend's final-round treatment.
 State round_final(const State& s) {
-    return State{__riscv_aes64es(s.lo, s.hi), __riscv_aes64es(s.hi, s.lo)};
+    return State{riscv_aes64es(s.lo, s.hi), riscv_aes64es(s.hi, s.lo)};
 }
 
 // Same rationale as the other backends' wipe_schedule(): the round-key
@@ -109,14 +148,14 @@ std::array<State, 15> expand_key256_riscv(const SecretKey& key) {
 
 #define AESLIB_KS256_STEP(rnum, idx)                       \
     do {                                                   \
-        std::uint64_t t4 = __riscv_aes64ks1i(t3, rnum);    \
-        t0 = __riscv_aes64ks2(t4, t0);                     \
-        t1 = __riscv_aes64ks2(t0, t1);                     \
+        std::uint64_t t4 = riscv_aes64ks1i(t3, rnum);    \
+        t0 = riscv_aes64ks2(t4, t0);                     \
+        t1 = riscv_aes64ks2(t0, t1);                     \
         rk[idx] = State{t0, t1};                           \
         if ((rnum) != 6) {                                 \
-            t4 = __riscv_aes64ks1i(t1, 0xA);                \
-            t2 = __riscv_aes64ks2(t4, t2);                 \
-            t3 = __riscv_aes64ks2(t2, t3);                 \
+            t4 = riscv_aes64ks1i(t1, 0xA);                \
+            t2 = riscv_aes64ks2(t4, t2);                 \
+            t3 = riscv_aes64ks2(t2, t3);                 \
             rk[(idx) + 1] = State{t2, t3};                 \
         }                                                  \
     } while (false)
@@ -147,9 +186,9 @@ std::array<State, 11> expand_key128_riscv(const SecretKey& key) {
 
 #define AESLIB_KS128_STEP(rnum, idx)                        \
     do {                                                    \
-        std::uint64_t t2 = __riscv_aes64ks1i(t1, rnum);     \
-        t0 = __riscv_aes64ks2(t2, t0);                      \
-        t1 = __riscv_aes64ks2(t0, t1);                      \
+        std::uint64_t t2 = riscv_aes64ks1i(t1, rnum);     \
+        t0 = riscv_aes64ks2(t2, t0);                      \
+        t1 = riscv_aes64ks2(t0, t1);                      \
         rk[idx] = State{t0, t1};                            \
     } while (false)
 

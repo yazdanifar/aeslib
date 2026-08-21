@@ -514,7 +514,7 @@ changes to `aes256_ctr.cpp`, `aes_gcm.cpp`, or anything under `include/`:
 **Dedicated key-schedule-assist instructions, unlike ARM.** RV64's scalar
 crypto extension *does* have a schedule-assist pair — `aes64ks1i`/`aes64ks2`
 — filling the same role `_mm_aeskeygenassist_si128` does for AES-NI. Per
-`<riscv_crypto.h>`'s own feature guards, both of those and the
+GCC/Clang's `<riscv_crypto.h>` feature guards, both of those and the
 `aes64es`/`aes64esm` round-transform instructions are available under `Zkne`
 alone (`aes64ks1i`/`aes64ks2` are gated on `Zkne || Zknd`, `aes64es`/
 `aes64esm` on `Zkne`) — the *decryption* instructions
@@ -523,21 +523,38 @@ backend doesn't need, since CTR/GCM only ever call the forward cipher, same
 as every other backend here — which is why the CPU-capability check above
 only tests for `Zkne`, and why `CMakeLists.txt` only enables
 `-march=rv64gc_zkne`, not `_zknd`, for this one file. So, like
-`aes_core_ni.cpp` and unlike `aes_core_arm.cpp`, this backend hand-rolls
-its own schedule rather than sharing `aes_key_schedule.hpp`. The round
-transform itself (`aes64esm`/`aes64es`, via `<riscv_crypto.h>`'s
-`__riscv_aes64esm`/`__riscv_aes64es` intrinsics) represents the 128-bit
-state as a *pair* of 64-bit registers rather than one 128-bit vector the way
-x86/ARM do — each instruction produces only half the next round's state, so
-a full round is two calls with the operand order swapped between them
-(`aes64esm(lo, hi)` then `aes64esm(hi, lo)`). Both the round-loop structure
-and the AES-128/256 key-schedule unrolling in `aes_core_riscv.cpp` follow
-OpenSSL's `rv64i_zkne_encrypt`/`rv64i_zkne_set_encrypt_key`
+`aes_core_ni.cpp` and unlike `aes_core_arm.cpp`, this backend hand-rolls its
+own schedule rather than sharing `aes_key_schedule.hpp`.
+
+**Inline asm, not `<riscv_crypto.h>` C intrinsics.** The four instructions
+(`aes64esm`/`aes64es`/`aes64ks1i`/`aes64ks2`) are emitted as inline asm
+(`asm("aes64esm %0, %1, %2" : "=r"(rd) : "r"(rs1), "r"(rs2))`), not via
+`<riscv_crypto.h>`'s `__riscv_aes64esm`-style intrinsics — that header turned
+out to be a comparatively recent GCC/Clang addition, present in a current
+Homebrew GCC 16 but absent from Ubuntu 24.04's `g++-riscv64-linux-gnu`
+package (GCC 13.3), the actual cross-compiler this project's `qemu-riscv64`
+CI job uses. This was found the direct way: the intrinsics version was
+tried first, broke that CI job on `#include <riscv_crypto.h>: No such file
+or directory`, and switching to inline asm (which only needs binutils to
+recognize the mnemonics, already true well before GCC grew the intrinsics
+header) fixed it without narrowing which toolchains this backend supports.
+
+**The 128-bit AES state/round-key** is represented as a pair of 64-bit
+registers (lo = bytes 0..7, hi = bytes 8..15), the layout the ISA's AES
+instructions are defined over (RISC-V is little-endian, so a raw 8-byte load
+from the block reproduces this layout with no byte-swapping, the same as
+x86-64/AArch64's 128-bit vector loads) — each instruction produces only half
+the next round's state, so a full round is two calls with the operand order
+swapped between them (`aes64esm(lo, hi)` then `aes64esm(hi, lo)`). Both the
+round-loop structure and the AES-128/256 key-schedule unrolling in
+`aes_core_riscv.cpp` follow OpenSSL's
+`rv64i_zkne_encrypt`/`rv64i_zkne_set_encrypt_key`
 (`crypto/aes/asm/aes-riscv64-zkn.pl`) — the canonical worked reference for
-this extension — adapted from inline assembly to C intrinsics rather than
-derived from the bare ISA spec, since getting an unfamiliar extension's
-instruction sequence right from prose risks a silently-wrong cipher that
-only a real KAT run catches.
+this extension — rather than being derived from the bare ISA spec, since
+getting an unfamiliar extension's instruction sequence right from prose
+risks a silently-wrong cipher that only a real KAT run catches; the
+sequence was additionally checked by compiling it with a real riscv64 GCC
+and inspecting the emitted assembly against that reference pattern.
 
 **Build isolation and CI, same shape as ARM.** `aes_core_riscv.cpp` is the
 only file compiled with `-march=rv64gc_zkne`
