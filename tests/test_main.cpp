@@ -6,9 +6,22 @@
 #include <cstdlib>
 #include <string>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include "test_support.hpp"
 
 int main(int argc, char** argv) {
+#if defined(_WIN32)
+    // Without this, a crash (e.g. an illegal-instruction fault from a CPU
+    // that misreports a capability) pops a blocking Windows Error Reporting
+    // dialog instead of exiting — headless CI has no one to click it, so the
+    // process (and the whole pipeline) hangs until the job's timeout kills
+    // it. Fail fast with a nonzero exit code instead.
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+#endif
     const std::string suite_filter = argc > 1 ? argv[1] : "";
 
     int ran = 0;

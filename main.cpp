@@ -9,6 +9,11 @@
 #include <string_view>
 #include <vector>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include "aeslib/aes256_ctr.hpp"
 #include "aeslib/backend.hpp"
 #include "aeslib/container.hpp"
@@ -42,6 +47,11 @@ std::vector<std::byte> make_sample_plaintext() {
 } // namespace
 
 int main() {
+#if defined(_WIN32)
+    // See tests/test_main.cpp for why: without this, a crash pops a
+    // blocking Windows Error Reporting dialog instead of exiting.
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+#endif
     const std::filesystem::path plaintext_path = "sample_plaintext.bin";
     const std::filesystem::path key_path = "sample.key";
     const std::filesystem::path ciphertext_path = "sample_ciphertext.aesc";
