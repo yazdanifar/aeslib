@@ -14,6 +14,7 @@ add_library(aeslib STATIC
   src/aes_core_soft.cpp
   src/aes_core_ni.cpp
   src/aes_core_arm.cpp
+  src/aes_core_riscv.cpp
   src/aes_core_hw.cpp
   src/aes_gcm.cpp
   src/ghash.cpp
@@ -42,6 +43,11 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
   set(AESLIB_TARGET_IS_ARM64 TRUE)
 endif()
 
+set(AESLIB_TARGET_IS_RISCV64 FALSE)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(riscv64)$")
+  set(AESLIB_TARGET_IS_RISCV64 TRUE)
+endif()
+
 if(MSVC)
   target_compile_options(aeslib PRIVATE /W4)
   # No extra flag needed for ARM64 crypto intrinsics under MSVC/clang-cl:
@@ -61,6 +67,19 @@ else()
     # Crypto Extensions intrinsics need +crypto on GCC/Clang, and only this
     # one translation unit should ever emit them.
     set_source_files_properties(src/aes_core_arm.cpp PROPERTIES COMPILE_OPTIONS "-march=armv8-a+crypto")
+  elseif(AESLIB_TARGET_IS_RISCV64)
+    # Same rationale, scoped to aes_core_riscv.cpp: the RV64 scalar crypto
+    # (Zkne) intrinsics need the zkne extension enabled on GCC/Clang. Zkne
+    # alone is enough — aes64es/aes64esm/aes64ks1i/aes64ks2 (this file's only
+    # intrinsics) are all available under Zkne per <riscv_crypto.h>'s feature
+    # guards; Zknd (decryption: aes64ds/aes64dsm/aes64im) is never used,
+    # since CTR/GCM only ever need the forward cipher, same as every other
+    # backend. Unlike x86's additive -maes, GCC/Clang's RISC-V -march=
+    # replaces rather than extends the target's base ISA string, so this
+    # assumes the riscv64-linux-gnu toolchain's default base (rv64gc) —
+    # matching cmake/riscv64-linux-gnu.cmake, the only place this branch is
+    # exercised.
+    set_source_files_properties(src/aes_core_riscv.cpp PROPERTIES COMPILE_OPTIONS "-march=rv64gc_zkne")
   endif()
 endif()
 

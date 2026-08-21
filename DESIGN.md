@@ -412,7 +412,7 @@ Nothing in the public API uses output-parameter error codes.
 
 ## Bonus objectives
 
-### Additional architectures: ARM AArch64 (and RISC-V after that)
+### Additional architectures: ARM AArch64 and RISC-V
 
 The dispatch model deliberately isolates *all* architecture-specific code
 behind one interface: functions with an identical signature
@@ -488,19 +488,83 @@ published 60-word AES-256 expansion, localizing a schedule bug independent
 of round-transform correctness now that the schedule is shared by two
 backends.
 
-**The next architecture: RISC-V.** RISC-V has two relevant AES extension
-families — `Zkne`/`Zknd` (scalar AES round instructions, under `Zkn`) and
-`Zvkned` (vector AES). Linux detection would go through the
-`riscv_hwprobe()` syscall rather than `getauxval(AT_HWCAP)`, since HWCAP
-only covers base ISA letters, not sub-extensions. Adding it would mean
-exactly the same three touch points ARM needed — one more
-`aes_core_riscv.cpp`, one more `#elif` in `aes_core_hw.cpp`, one more
-branch in `cpu_detect.cpp` — with no changes to `aes256_ctr.cpp`,
-`aes_gcm.cpp`, or anything under `include/`. Whether RISC-V's scalar AES
-instructions have a dedicated key-schedule-assist instruction (the way
-AES-NI does, but ARM doesn't) would need checking against the ISA spec
-before implementation; if not, the same shared `aes_key_schedule.hpp`
-would serve a third backend.
+**A third architecture, built rather than just argued for: RISC-V.** This
+started as brief 3.2's "extra credit if a third architecture would be
+straightforward" argument in prose. It's now a real backend, added through
+exactly the three touch points the ARM section above predicted, with no
+changes to `aes256_ctr.cpp`, `aes_gcm.cpp`, or anything under `include/`:
+
+- **`aes_core_hw.cpp`** gained a `#elif defined(__riscv) && __riscv_xlen ==
+  64` branch dispatching to `_riscv` instead of `_ni`/`_arm`.
+- **`cpu::has_hw_aes()`** (`src/cpu_detect.cpp`) gained a Linux riscv64
+  branch. Unlike ARM, this doesn't go through `getauxval(AT_HWCAP)` — HWCAP
+  only has bits for base ISA letters, not sub-extensions like `Zkne` — so it
+  uses the `riscv_hwprobe()` syscall instead (invoked directly via
+  `syscall(2)` with the kernel UAPI `<asm/hwprobe.h>` struct/macros, rather
+  than glibc's `<sys/hwprobe.h>` wrapper, since that wrapper only landed in
+  glibc 2.39 and the raw syscall works against any glibc version), checking
+  `RISCV_HWPROBE_KEY_IMA_EXT_0` for the `Zkne` bit (only — `Zknd`, the
+  decryption extension, is never checked or required; see below). A riscv64
+  target under an unrecognized OS falls back to `false`, same as every other
+  architecture's catch-all.
+- **`aes_core_riscv.cpp`**, the new backend itself, targeting **RV64GC +
+  Zkne** (scalar AES; the vector `Zvkned` extension was left for a future
+  pass — Zkne alone already answers brief 3.2's question).
+
+**Dedicated key-schedule-assist instructions, unlike ARM.** RV64's scalar
+crypto extension *does* have a schedule-assist pair — `aes64ks1i`/`aes64ks2`
+— filling the same role `_mm_aeskeygenassist_si128` does for AES-NI. Per
+`<riscv_crypto.h>`'s own feature guards, both of those and the
+`aes64es`/`aes64esm` round-transform instructions are available under `Zkne`
+alone (`aes64ks1i`/`aes64ks2` are gated on `Zkne || Zknd`, `aes64es`/
+`aes64esm` on `Zkne`) — the *decryption* instructions
+(`aes64ds`/`aes64dsm`/`aes64im`, gated on `Zknd`) are the only ones this
+backend doesn't need, since CTR/GCM only ever call the forward cipher, same
+as every other backend here — which is why the CPU-capability check above
+only tests for `Zkne`, and why `CMakeLists.txt` only enables
+`-march=rv64gc_zkne`, not `_zknd`, for this one file. So, like
+`aes_core_ni.cpp` and unlike `aes_core_arm.cpp`, this backend hand-rolls
+its own schedule rather than sharing `aes_key_schedule.hpp`. The round
+transform itself (`aes64esm`/`aes64es`, via `<riscv_crypto.h>`'s
+`__riscv_aes64esm`/`__riscv_aes64es` intrinsics) represents the 128-bit
+state as a *pair* of 64-bit registers rather than one 128-bit vector the way
+x86/ARM do — each instruction produces only half the next round's state, so
+a full round is two calls with the operand order swapped between them
+(`aes64esm(lo, hi)` then `aes64esm(hi, lo)`). Both the round-loop structure
+and the AES-128/256 key-schedule unrolling in `aes_core_riscv.cpp` follow
+OpenSSL's `rv64i_zkne_encrypt`/`rv64i_zkne_set_encrypt_key`
+(`crypto/aes/asm/aes-riscv64-zkn.pl`) — the canonical worked reference for
+this extension — adapted from inline assembly to C intrinsics rather than
+derived from the bare ISA spec, since getting an unfamiliar extension's
+instruction sequence right from prose risks a silently-wrong cipher that
+only a real KAT run catches.
+
+**Build isolation and CI, same shape as ARM.** `aes_core_riscv.cpp` is the
+only file compiled with `-march=rv64gc_zkne`
+(`CMakeLists.txt`'s `AESLIB_TARGET_IS_RISCV64` branch) — same isolation
+rationale as `-maes`/`-march=armv8-a+crypto`, though note RISC-V's `-march=`
+*replaces* rather than extends the base ISA string on GCC/Clang, so this
+assumes the `riscv64-linux-gnu` cross toolchain's default `rv64gc` base
+(`cmake/riscv64-linux-gnu.cmake`). Two new CI legs test it, mirroring the
+arm64 emulated/native pair: `qemu-riscv64` (cross-compiled, run under
+`qemu-riscv64-static -cpu max`) and `riscv64-native`, which uses the [RISE
+RISC-V Runners](https://riseproject.dev/2026/03/24/announcing-the-rise-risc-v-runners-free-native-risc-v-ci-on-github/)
+free-CI service for real, non-emulated riscv64 hardware (physical Scaleway
+EM-RV1 servers, SOPHGO SG2044 chip) — requires installing RISE's GitHub App
+on the repo, a one-time manual step outside this codebase.
+
+**An honest gap this backend does not close: silicon crypto-extension
+support on the native CI leg is unconfirmed.** The AArch64 Crypto
+Extensions have been close to universal on real ARM64 silicon for years,
+which is why `linux-arm64-native` asserts `AESLIB_EXPECTED_BACKEND=hardware`
+unconditionally. RISC-V's crypto extensions are new, and plenty of shipping
+RISC-V server chips implement only the base ISA — whether the SG2044 chip
+underlying the RISE runners is one of the exceptions isn't yet established.
+`riscv64-native`'s CI job therefore does *not* assert a specific backend;
+it proves the build and whichever backend `riscv_hwprobe()` correctly
+selects both work on real riscv64 hardware, and leaves "is that backend
+Hardware or the Software fallback" for the job's own output to answer,
+rather than asserting either way without having actually looked.
 
 ### Additional AES modes: AES-128 + AES-GCM
 

@@ -39,12 +39,23 @@ Block aes128_encrypt_block_ni(const SecretKey& key, const Block& block);
 Block aes256_encrypt_block_arm(const SecretKey& key, const Block& block);
 Block aes128_encrypt_block_arm(const SecretKey& key, const Block& block);
 
+// Same operations, implemented with RV64 Zkne scalar crypto intrinsics
+// (aes64es/aes64esm for the round transform, aes64ks1i/aes64ks2 for the key
+// schedule — RISC-V has dedicated key-schedule-assist instructions, unlike
+// ARM, so this backend computes its own schedule rather than sharing
+// aes_key_schedule.hpp). Only ever called after cpu::has_hw_aes() has been
+// confirmed true; must not be called otherwise since the process may fault
+// executing an unsupported instruction.
+Block aes256_encrypt_block_riscv(const SecretKey& key, const Block& block);
+Block aes128_encrypt_block_riscv(const SecretKey& key, const Block& block);
+
 // Hardware-accelerated forward cipher for whichever architecture this binary
-// was built for — AES-NI on amd64, AArch64 Crypto Extensions on arm64 (see
-// aes_core_hw.cpp). The mode logic in aes256_ctr.cpp/aes_gcm.cpp calls only
-// these, never the arch-specific _ni/_arm functions above by name, so
-// dispatch to a new architecture is a one-file change (aes_core_hw.cpp).
-// Only ever called after cpu::has_hw_aes() has been confirmed true.
+// was built for — AES-NI on amd64, AArch64 Crypto Extensions on arm64, RV64
+// Zkne on riscv64 (see aes_core_hw.cpp). The mode logic in
+// aes256_ctr.cpp/aes_gcm.cpp calls only these, never the arch-specific
+// _ni/_arm/_riscv functions above by name, so dispatch to a new architecture
+// is a one-file change (aes_core_hw.cpp). Only ever called after
+// cpu::has_hw_aes() has been confirmed true.
 Block aes256_encrypt_block_hw(const SecretKey& key, const Block& block);
 Block aes128_encrypt_block_hw(const SecretKey& key, const Block& block);
 

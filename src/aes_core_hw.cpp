@@ -27,6 +27,11 @@ Block aes128_encrypt_block_hw(const SecretKey& key, const Block& block) { return
 Block aes256_encrypt_block_hw(const SecretKey& key, const Block& block) { return aes256_encrypt_block_arm(key, block); }
 Block aes128_encrypt_block_hw(const SecretKey& key, const Block& block) { return aes128_encrypt_block_arm(key, block); }
 
+#elif defined(__riscv) && __riscv_xlen == 64
+
+Block aes256_encrypt_block_hw(const SecretKey& key, const Block& block) { return aes256_encrypt_block_riscv(key, block); }
+Block aes128_encrypt_block_hw(const SecretKey& key, const Block& block) { return aes128_encrypt_block_riscv(key, block); }
+
 #else
 
 Block aes256_encrypt_block_hw(const SecretKey&, const Block&) {

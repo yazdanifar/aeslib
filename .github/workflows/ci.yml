@@ -117,6 +117,64 @@ jobs:
       - name: Run harness under qemu-aarch64 -cpu max
         run: qemu-aarch64-static -cpu max -L /usr/aarch64-linux-gnu build-aarch64/aes_harness
 
+  # Cross-compiles for riscv64 and runs the result under qemu-riscv64 -cpu
+  # max, asserting (via AESLIB_EXPECTED_BACKEND, see tests/test_backend.cpp)
+  # that active_backend() reports Hardware and that src/aes_core_riscv.cpp's
+  # real implementation (RV64 Zkne scalar crypto intrinsics) produces correct
+  # output under emulation. Mirrors qemu-aarch64 above.
+  #
+  # Unconfirmed as of this job's addition: whether QEMU's `max` CPU model
+  # advertises Zkne/Zknd by default the way its aarch64 models advertise the
+  # AArch64 Crypto Extensions. If the first run of this job shows
+  # active_backend() landing on Software instead of Hardware, the fix is an
+  # explicit `-cpu rv64,zkne=true,zknd=true`-style flag here rather than
+  # `-cpu max` alone — check the actual CI output before assuming either
+  # answer.
+  qemu-riscv64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install riscv64 cross toolchain and qemu-user-static
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++-riscv64-linux-gnu qemu-user-static
+      - name: Configure
+        run: cmake -B build-riscv64 -DCMAKE_TOOLCHAIN_FILE=cmake/riscv64-linux-gnu.cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      - name: Build
+        run: cmake --build build-riscv64 -j
+      - name: Run tests under qemu-riscv64 -cpu max
+        env:
+          AESLIB_EXPECTED_BACKEND: hardware
+        run: qemu-riscv64-static -cpu max -L /usr/riscv64-linux-gnu build-riscv64/tests/aeslib_tests
+      - name: Run harness under qemu-riscv64 -cpu max
+        run: qemu-riscv64-static -cpu max -L /usr/riscv64-linux-gnu build-riscv64/aes_harness
+
+  # Real, non-emulated RISC-V hardware via the RISE RISC-V Runners free CI
+  # service (physical Scaleway EM-RV1 servers, SOPHGO SG2044 chip) — the
+  # riscv64 complement to macos-arm64/linux-arm64-native below. Requires the
+  # RISE GitHub App to be installed on this repository first; see
+  # https://riseproject.dev/2026/03/24/announcing-the-rise-risc-v-runners-free-native-risc-v-ci-on-github/
+  #
+  # Deliberately does NOT set AESLIB_EXPECTED_BACKEND=hardware the way
+  # linux-arm64-native does: unlike the AArch64 Crypto Extensions (universal
+  # on real silicon for years), it is not yet confirmed whether the SG2044
+  # chip implements Zkne/Zknd in hardware. This job proves the build and the
+  # correctly-selected backend (whichever `active_backend()` reports) work on
+  # real riscv64 hardware; whether that backend is Hardware or the Software
+  # fallback is left for this job's own output to reveal.
+  riscv64-native:
+    runs-on: ubuntu-24.04-riscv
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Run harness
+        run: ./build/aes_harness
+
   # Two genuine, non-emulated ARM64 machines — the real-hardware complement
   # to the QEMU legs above (which prove dispatch/correctness under emulation
   # but can't prove real silicon behaves the same way). Both run natively, no
