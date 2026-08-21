@@ -5,6 +5,13 @@
 #include <fstream>
 #include <string>
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 #include "aeslib/exceptions.hpp"
 
 namespace aeslib {
@@ -81,18 +88,63 @@ std::vector<std::byte> read_file(const std::filesystem::path& path) {
     return data;
 }
 
+#if defined(_WIN32)
+
 void write_file(const std::filesystem::path& path, const std::vector<std::byte>& data) {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
+    // FILE_FLAG_OPEN_REPARSEPOINT + the reparse-point check right below stop
+    // CreateFileW from transparently following a symlink/junction an
+    // attacker planted at `path` ahead of time — without it, this data would
+    // get written wherever that reparse point points, with this process's
+    // permissions (a classic TOCTOU file-clobber primitive). Same protection
+    // as key.cpp's save_to_file.
+    HANDLE h = ::CreateFileW(path.wstring().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSEPOINT, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
         throw IoError("failed to open file for writing: " + path.string());
     }
-    if (!data.empty()) {
-        out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (::GetFileInformationByHandle(h, &info) && (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        ::CloseHandle(h);
+        throw IoError("refusing to write through a symlink/reparse point: " + path.string());
     }
-    if (!out) {
+    DWORD written = 0;
+    const bool ok = data.empty() ||
+                     (::WriteFile(h, data.data(), static_cast<DWORD>(data.size()), &written, nullptr) &&
+                      written == data.size());
+    ::CloseHandle(h);
+    if (!ok) {
         throw IoError("failed to write file: " + path.string());
     }
 }
+
+#else
+
+void write_file(const std::filesystem::path& path, const std::vector<std::byte>& data) {
+    // O_NOFOLLOW closes the same symlink-planting TOCTOU as the Windows
+    // branch's reparse-point check above: open() fails with ELOOP instead of
+    // transparently following a symlink an attacker planted at `path`.
+    int fd = ::open(path.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
+    if (fd < 0) {
+        throw IoError("failed to open file for writing: " + path.string());
+    }
+    bool ok = true;
+    const auto* data_ptr = reinterpret_cast<const char*>(data.data());
+    std::size_t written = 0;
+    while (ok && written < data.size()) {
+        const ssize_t n = ::write(fd, data_ptr + written, data.size() - written);
+        if (n < 0) {
+            ok = false;
+            break;
+        }
+        written += static_cast<std::size_t>(n);
+    }
+    ::close(fd);
+    if (!ok) {
+        throw IoError("failed to write file: " + path.string());
+    }
+}
+
+#endif
 
 void save_container(const Container& container, const std::filesystem::path& path) {
     write_file(path, serialize(container));

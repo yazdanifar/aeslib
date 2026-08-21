@@ -492,6 +492,20 @@ Nothing in the public API uses output-parameter error codes.
   restart or a fresh `SecretKey` reloaded from the same key file.
 - **Software-path cache timing** is addressed, not just documented: see
   "Constant-time software S-box" (§1).
+- **Symlink-planting on file writes** is addressed, not just documented: every
+  write path — `SecretKey::save_to_file`/`save_to_file_encrypted` and
+  `write_file` (the shared helper behind `save_container`/`save_gcm_container`)
+  — opens its destination with `O_NOFOLLOW` on POSIX and
+  `FILE_FLAG_OPEN_REPARSEPOINT` plus a reparse-point check on Windows. Without
+  this, an attacker able to pre-create a symlink at the destination path
+  (plausible in a shared or world-writable directory) could redirect a key or
+  container write to an arbitrary file this process can write to —
+  [CWE-59, "Improper Link Resolution Before File Access ('Link
+  Following')"](https://cwe.mitre.org/data/definitions/59.html), a classic
+  TOCTOU file-clobber primitive. Overwriting an *existing regular file* at
+  that path is still allowed (`save_to_file` intentionally has no
+  "don't clobber an existing key" guard); only following a symlink is
+  refused.
 
 ## 7. Test/production isolation
 

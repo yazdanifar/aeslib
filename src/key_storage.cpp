@@ -166,10 +166,19 @@ void SecretKey::save_to_file_encrypted(const std::filesystem::path& path, std::s
 
     // Write file: plaintext_part || tag.
 #if defined(_WIN32)
+    // FILE_FLAG_OPEN_REPARSEPOINT + the reparse-point check right below stop
+    // CreateFileW from transparently following a symlink/junction an
+    // attacker planted at `path` ahead of time — see key.cpp's save_to_file
+    // for the same protection and rationale.
     HANDLE h = ::CreateFileW(path.wstring().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                              FILE_ATTRIBUTE_NORMAL, nullptr);
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSEPOINT, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         throw IoError("failed to create encrypted key file: " + path.string());
+    }
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (::GetFileInformationByHandle(h, &info) && (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        ::CloseHandle(h);
+        throw IoError("refusing to write encrypted key file through a symlink/reparse point: " + path.string());
     }
     DWORD written = 0;
     const bool ok = ::WriteFile(h, plaintext_part.data(), static_cast<DWORD>(plaintext_part.size()), &written, nullptr) &&
@@ -181,7 +190,10 @@ void SecretKey::save_to_file_encrypted(const std::filesystem::path& path, std::s
         throw IoError("failed to write encrypted key file: " + path.string());
     }
 #else
-    int fd = ::open(path.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    // O_NOFOLLOW closes the same symlink-planting TOCTOU as the Windows
+    // branch's reparse-point check above — see key.cpp's save_to_file for
+    // the same protection and rationale.
+    int fd = ::open(path.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
     if (fd < 0) {
         throw IoError("failed to create encrypted key file: " + path.string());
     }

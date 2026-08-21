@@ -102,10 +102,20 @@ void SecretKey::save_to_file(const std::filesystem::path& path) const {
     // exactly the kind of incidental, unwiped key-byte copy this bonus asks
     // to avoid. The raw Win32 API writes straight from bytes_ with no
     // intermediate buffer.
+    // FILE_FLAG_OPEN_REPARSEPOINT + the reparse-point check right below stop
+    // CreateFileW from transparently following a symlink/junction an
+    // attacker planted at `path` ahead of time — without it, the key bytes
+    // below would get written wherever that reparse point points, with this
+    // process's permissions (a classic TOCTOU file-clobber primitive).
     HANDLE h = ::CreateFileW(path.wstring().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                              FILE_ATTRIBUTE_NORMAL, nullptr);
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSEPOINT, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         throw IoError("failed to create key file: " + path.string());
+    }
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (::GetFileInformationByHandle(h, &info) && (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        ::CloseHandle(h);
+        throw IoError("refusing to write key file through a symlink/reparse point: " + path.string());
     }
     const char version = static_cast<char>(kKeyFileVersion);
     const char size_marker = static_cast<char>(key_len);
@@ -125,7 +135,10 @@ void SecretKey::save_to_file(const std::filesystem::path& path) const {
     // std::ofstream: an iostream sink copies key bytes through its own
     // internal streambuf on the way to the OS, an incidental unwiped copy
     // this bonus asks to avoid.
-    int fd = ::open(path.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    // O_NOFOLLOW closes the same symlink-planting TOCTOU as the Windows
+    // branch's reparse-point check above: open() fails with ELOOP instead of
+    // transparently following a symlink an attacker planted at `path`.
+    int fd = ::open(path.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
     if (fd < 0) {
         throw IoError("failed to create key file: " + path.string());
     }
