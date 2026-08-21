@@ -7,6 +7,9 @@
 #include "internal.hpp"
 
 #if defined(_WIN32)
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
 #include <windows.h>
 #else
 #include <fcntl.h>
