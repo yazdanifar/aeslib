@@ -244,6 +244,20 @@ jobs:
         run: cmake -B build
       - name: Build
         run: cmake --build build --config Release
+      - name: Diagnose aes_core hang (temporary)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath build\tests\Release\aeslib_tests.exe -ArgumentList "aes_core" `
+            -NoNewWindow -PassThru -RedirectStandardOutput out.txt -RedirectStandardError err.txt
+          Start-Sleep -Seconds 15
+          if (-not $p.HasExited) {
+            Write-Host "still running after 15s, dumping partial output and killing"
+            $p.Kill()
+          }
+          Write-Host "----- stdout -----"
+          Get-Content out.txt -ErrorAction SilentlyContinue
+          Write-Host "----- stderr -----"
+          Get-Content err.txt -ErrorAction SilentlyContinue
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure --timeout 20
       - name: Run harness
