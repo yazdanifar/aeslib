@@ -683,15 +683,13 @@ own schedule rather than sharing `aes_key_schedule.hpp`.
 **Inline asm, not `<riscv_crypto.h>` C intrinsics.** The four instructions
 (`aes64esm`/`aes64es`/`aes64ks1i`/`aes64ks2`) are emitted as inline asm
 (`asm("aes64esm %0, %1, %2" : "=r"(rd) : "r"(rs1), "r"(rs2))`), not via
-`<riscv_crypto.h>`'s `__riscv_aes64esm`-style intrinsics — that header turned
-out to be a comparatively recent GCC/Clang addition, present in a current
-Homebrew GCC 16 but absent from Ubuntu 24.04's `g++-riscv64-linux-gnu`
-package (GCC 13.3), the actual cross-compiler this project's `qemu-riscv64`
-CI job uses. This was found the direct way: the intrinsics version was
-tried first, broke that CI job on `#include <riscv_crypto.h>: No such file
-or directory`, and switching to inline asm (which only needs binutils to
-recognize the mnemonics, already true well before GCC grew the intrinsics
-header) fixed it without narrowing which toolchains this backend supports.
+`<riscv_crypto.h>`'s `__riscv_aes64esm`-style intrinsics — that header is a
+comparatively recent GCC/Clang addition, present in a current Homebrew GCC 16
+but absent from Ubuntu 24.04's `g++-riscv64-linux-gnu` package (GCC 13.3),
+the actual cross-compiler this project's `qemu-riscv64` CI job uses. Inline
+asm only needs binutils to recognize the mnemonics — true well before GCC
+grew the intrinsics header — so it works on both toolchains without
+narrowing which ones this backend supports.
 
 **The 128-bit AES state/round-key** is represented as a pair of 64-bit
 registers (lo = bytes 0..7, hi = bytes 8..15), the layout the ISA's AES
@@ -721,16 +719,15 @@ assumes the `riscv64-linux-gnu` cross toolchain's default `rv64gc` base
 
 A native-hardware leg via the [RISE RISC-V
 Runners](https://riseproject.dev/2026/03/24/announcing-the-rise-risc-v-runners-free-native-risc-v-ci-on-github/)
-service was tried and dropped: it needs a self-hosted runner this private
-repo can't reliably get, and an unregistered runner leaves the job queued
-forever with no timeout. `qemu-riscv64` already proves the real Zkne
+service was considered and dropped: it needs a self-hosted runner this
+private repo can't reliably get, and an unregistered runner leaves the job
+queued forever with no timeout. `qemu-riscv64` already proves the real Zkne
 instruction sequence is correct, which is enough to back brief 3.2's
 third-architecture claim without a live hardware leg.
 
-**A second honest gap, specific to this one CI runner's QEMU package
-version.** `qemu-riscv64` needs `zkne=true` (`-cpu max` alone doesn't enable
-it — found the direct way, by that job initially failing) to make QEMU's
-TCG actually execute the Zkne instructions. But even with that flag,
+**A gap specific to this CI runner's QEMU package version.** `qemu-riscv64`
+needs `zkne=true` (`-cpu max` alone doesn't enable it) to make QEMU's TCG
+actually execute the Zkne instructions. But even with that flag,
 `cpu::has_hw_aes()` still reports Software under this specific QEMU:
 checked directly against QEMU's own source at the exact version Ubuntu
 24.04 ships (`qemu-user-static` 8.2.2) and confirmed
@@ -747,8 +744,8 @@ equivalent) that call `aes_core_riscv.cpp`'s functions directly, bypassing
 instruction sequence every run, even though the ordinary
 dispatch-through-`active_backend()` path can't be asserted there.
 
-**An honest gap this backend does not close: silicon crypto-extension
-support has not been confirmed on real hardware.** Unlike the AArch64
+**A gap this backend does not close: silicon crypto-extension support has
+not been confirmed on real hardware.** Unlike the AArch64
 Crypto Extensions (close to universal on real ARM64 silicon, hence
 `linux-arm64-native` asserting `AESLIB_EXPECTED_BACKEND=hardware`), RISC-V's
 are new and plenty of shipping server chips implement only the base ISA.
@@ -925,9 +922,9 @@ when the tag doesn't verify. Tag comparison goes through
 than returning on the first mismatch, to avoid a timing side channel on MAC
 verification.
 
-**Hardening against a malicious/corrupted file.** Three issues were found
-and fixed during review, and are worth stating as part of the format's
-design rather than leaving implicit:
+**Hardening against a malicious/corrupted file.** Three edge cases in the
+wire format's validation, stated explicitly as part of the design rather
+than left implicit:
 
 1. `iterations == 0` collapses PBKDF2 to a single HMAC evaluation,
    defeating iteration stretching entirely — rejected on both save
