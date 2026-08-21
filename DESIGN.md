@@ -564,11 +564,32 @@ rationale as `-maes`/`-march=armv8-a+crypto`, though note RISC-V's `-march=`
 assumes the `riscv64-linux-gnu` cross toolchain's default `rv64gc` base
 (`cmake/riscv64-linux-gnu.cmake`). Two new CI legs test it, mirroring the
 arm64 emulated/native pair: `qemu-riscv64` (cross-compiled, run under
-`qemu-riscv64-static -cpu max`) and `riscv64-native`, which uses the [RISE
-RISC-V Runners](https://riseproject.dev/2026/03/24/announcing-the-rise-risc-v-runners-free-native-risc-v-ci-on-github/)
+`qemu-riscv64-static -cpu max,zkne=true`) and `riscv64-native`, which uses
+the [RISE RISC-V
+Runners](https://riseproject.dev/2026/03/24/announcing-the-rise-risc-v-runners-free-native-risc-v-ci-on-github/)
 free-CI service for real, non-emulated riscv64 hardware (physical Scaleway
 EM-RV1 servers, SOPHGO SG2044 chip) — requires installing RISE's GitHub App
 on the repo, a one-time manual step outside this codebase.
+
+**A second honest gap, specific to this one CI runner's QEMU package
+version.** `qemu-riscv64` needs `zkne=true` (`-cpu max` alone doesn't enable
+it — found the direct way, by that job initially failing) to make QEMU's
+TCG actually execute the Zkne instructions. But even with that flag,
+`cpu::has_hw_aes()` still reports Software under this specific QEMU:
+checked directly against QEMU's own source at the exact version Ubuntu
+24.04 ships (`qemu-user-static` 8.2.2) and confirmed
+`RISCV_HWPROBE_EXT_ZKNE`/`ZKND` don't exist yet as bit definitions in that
+version's `riscv_hwprobe()` implementation — no CPU flag can make an
+unimplemented bit appear. That's a detection-*reporting* gap in one CI
+runner's QEMU package, not a missing-instruction gap (the instructions
+really do execute correctly there) and not a bug in this project's own
+`riscv_hwprobe()` code. Rather than let it silently skip proving the
+backend's real output, `tests/test_aes_core.cpp` gained two riscv64-only
+tests (`riscv_hardware_matches_fips197_kat_directly` and the AES-128
+equivalent) that call `aes_core_riscv.cpp`'s functions directly, bypassing
+`cpu::has_hw_aes()` — so `qemu-riscv64` still exercises and proves the real
+instruction sequence every run, even though the ordinary
+dispatch-through-`active_backend()` path can't be asserted there.
 
 **An honest gap this backend does not close: silicon crypto-extension
 support on the native CI leg is unconfirmed.** The AArch64 Crypto

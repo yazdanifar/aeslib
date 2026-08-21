@@ -306,3 +306,37 @@ AESLIB_TEST(aes_core, aes128_backends_agree_on_random_blocks) {
         CHECK(soft_result == hw_result);
     }
 }
+
+#if defined(__riscv) && __riscv_xlen == 64
+// The tests above skip whenever cpu::has_hw_aes() is false — correct for
+// real hardware, where the extension genuinely might be absent. But this
+// project's own qemu-riscv64 CI leg passes -cpu max,zkne=true (QEMU's TCG
+// does correctly execute the Zkne instructions under that flag — confirmed
+// separately), while cpu::has_hw_aes() still reports false there: Ubuntu
+// 24.04's qemu-user-static (8.2.2) predates RISCV_HWPROBE_EXT_ZKNE/ZKND
+// existing as bit definitions in its riscv_hwprobe() syscall implementation
+// at all, so no CPU flag can make hwprobe report them on that specific
+// QEMU version — a detection-reporting gap, not a missing-instruction one.
+// These two tests call the riscv backend directly, bypassing
+// cpu::has_hw_aes(), specifically so this project's riscv64 CI still
+// exercises aes_core_riscv.cpp's real instruction sequence under emulation
+// rather than silently skipping it the way the has_hw_aes()-gated tests
+// above do on this particular toolchain.
+AESLIB_TEST(aes_core, riscv_hardware_matches_fips197_kat_directly) {
+    const SecretKey key = key_from_bytes(kKatKey);
+    const Block plaintext = block_from_bytes(kKatPlaintext);
+    const Block expected = block_from_bytes(kKatCiphertext);
+
+    const Block actual = aeslib::detail::aes256_encrypt_block_riscv(key, plaintext);
+    CHECK(actual == expected);
+}
+
+AESLIB_TEST(aes_core, riscv_hardware_matches_fips197_aes128_kat_directly) {
+    const SecretKey key = key_from_bytes16(kKat128Key);
+    const Block plaintext = block_from_bytes(kKat128Plaintext);
+    const Block expected = block_from_bytes(kKat128Ciphertext);
+
+    const Block actual = aeslib::detail::aes128_encrypt_block_riscv(key, plaintext);
+    CHECK(actual == expected);
+}
+#endif

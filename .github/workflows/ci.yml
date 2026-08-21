@@ -117,24 +117,34 @@ jobs:
       - name: Run harness under qemu-aarch64 -cpu max
         run: qemu-aarch64-static -cpu max -L /usr/aarch64-linux-gnu build-aarch64/aes_harness
 
-  # Cross-compiles for riscv64 and runs the result under qemu-riscv64,
-  # asserting (via AESLIB_EXPECTED_BACKEND, see tests/test_backend.cpp) that
-  # active_backend() reports Hardware and that src/aes_core_riscv.cpp's real
-  # implementation (RV64 Zkne scalar crypto) produces correct output under
-  # emulation. Mirrors qemu-aarch64 above.
+  # Cross-compiles for riscv64 and runs the result under qemu-riscv64 -cpu
+  # max,zkne=true, proving src/aes_core_riscv.cpp's real RV64 Zkne
+  # instruction sequence produces correct FIPS-197 output under emulation.
+  # Mirrors qemu-aarch64 above, with one deliberate difference explained
+  # below: it does NOT assert AESLIB_EXPECTED_BACKEND=hardware.
   #
-  # `-cpu max,zkne=true`, not `-cpu max` alone: confirmed empirically (this
-  # job's first run) that QEMU's `max` CPU model does NOT advertise Zkne by
-  # default the way its aarch64 models advertise the AArch64 Crypto
-  # Extensions unconditionally — active_backend() landed on Software with
-  # bare `-cpu max`, even though the AES output was still correct (the
-  # software fallback is exercised extensively elsewhere too). `zkne=true`
-  # is a real, accepted QEMU riscv64 CPU property — confirmed directly
-  # against a local QEMU 11.1.0 build; Ubuntu 24.04's qemu-user-static
-  # 8.2.2, this job's actual version, wasn't checked locally, but scalar
-  # crypto support landed in QEMU well before that release — that turns the
-  # extension on for both codegen and the `riscv_hwprobe()` result this
-  # binary's own detection reads.
+  # `zkne=true` is a real, accepted QEMU riscv64 CPU property (confirmed
+  # directly against a local QEMU 11.1.0 build) that makes QEMU's TCG
+  # correctly execute the Zkne instructions — `-cpu max` alone does not
+  # enable it. But even with that flag, cpu::has_hw_aes() still reports
+  # Software here: checked directly against QEMU's own source
+  # (linux-user/syscall.c) at the exact version Ubuntu 24.04 ships
+  # (qemu-user-static 8.2.2) and confirmed RISCV_HWPROBE_EXT_ZKNE/ZKND don't
+  # exist yet as bit definitions in that version's riscv_hwprobe() syscall
+  # implementation — no CPU flag can make an unimplemented bit appear. This
+  # is a detection-*reporting* gap specific to this one CI runner's QEMU
+  # package version, not a missing-instruction gap (TCG really does execute
+  # Zkne correctly here) and not a bug in this project's own
+  # riscv_hwprobe()-based detection code.
+  #
+  # So the backend-dispatch KATs (tests/test_aes_core.cpp's
+  # riscv_hardware_matches_fips197_kat_directly and the AES-128 equivalent)
+  # call aes_core_riscv.cpp's functions directly, bypassing
+  # cpu::has_hw_aes(), specifically so this real gap in one CI runner's QEMU
+  # doesn't silently skip proving the RISC-V backend's actual output is
+  # correct — the whole rest of the suite still runs the ordinary way, which
+  # is why AESLIB_EXPECTED_BACKEND isn't set: on this specific QEMU version
+  # Software is the only truthful answer for active_backend() to give.
   qemu-riscv64:
     runs-on: ubuntu-latest
     steps:
@@ -148,8 +158,6 @@ jobs:
       - name: Build
         run: cmake --build build-riscv64 -j
       - name: Run tests under qemu-riscv64 -cpu max,zkne=true
-        env:
-          AESLIB_EXPECTED_BACKEND: hardware
         run: qemu-riscv64-static -cpu max,zkne=true -L /usr/riscv64-linux-gnu build-riscv64/tests/aeslib_tests
       - name: Run harness under qemu-riscv64 -cpu max,zkne=true
         run: qemu-riscv64-static -cpu max,zkne=true -L /usr/riscv64-linux-gnu build-riscv64/aes_harness
