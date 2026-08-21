@@ -94,7 +94,7 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-Eight suites are registered:
+Nine suites are registered:
 
 - **`aeslib.aes_core`** — independent AES-256/AES-128 known-answer tests
   (FIPS-197 Appendix C.3/C.1, NIST SP 800-38A F.1.5, two NIST CAVP
@@ -125,11 +125,17 @@ Eight suites are registered:
   tamper-detection/wrong-key tests, GCM container format edge cases, and
   nonce/tag freshness checks (see `tests/test_gcm.cpp` and DESIGN.md's
   [Additional AES modes](DESIGN.md#additional-aes-modes-aes-128--aes-gcm)).
+- **`aeslib.generic`** — round-trips of the templated `encrypt`/
+  `decrypt_as<T>` overloads over `std::vector<uint8_t>`, `std::array`,
+  `std::string`, `std::vector<int32_t>`, and a plain struct, for both CTR
+  and GCM, plus wrong-length format-error checks (see
+  `tests/test_generic.cpp` and DESIGN.md's
+  [Generic support for other types via templates](DESIGN.md#generic-support-for-other-types-via-templates)).
 
 Disable with `-DAESLIB_BUILD_TESTS=OFF` if you only want the library and
 harness.
 
-For a sanitizer build (brief 2.9 — "we will look at this with sanitizers"):
+For a sanitizer build (brief 2.7 — "we will look at this with sanitizers"):
 
 ```sh
 cmake -B build-san -DCMAKE_BUILD_TYPE=Debug -DAESLIB_ENABLE_SANITIZERS=ON
@@ -194,7 +200,7 @@ verified" section for how this was validated and its limitations.
 
 ## Scope
 
-Beyond the challenge's core requirements, this submission implements eight
+Beyond the challenge's core requirements, this submission implements all ten
 Section 3 bonus objectives. Each entry below is what was built, its test
 coverage, and where to read the design rationale — kept in DESIGN.md, linked
 per item rather than repeated here.
@@ -209,6 +215,13 @@ per item rather than repeated here.
   whichever backend the build targets) plus the `qemu-aarch64`/
   `macos-arm64`/`linux-arm64-native` CI jobs. Design:
   [ARM AArch64 Crypto Extensions](DESIGN.md#additional-architectures-arm-aarch64-and-risc-v-after-that).
+- **3.3 Additional AES modes.** AES-128 key support plus `AesGcm` (NIST SP
+  800-38D), sharing a templated software backend and a separate AES-NI
+  key-expansion routine; its own `src/ghash.cpp`. CBC was deliberately
+  skipped — both backends are forward-cipher-only, and CBC is a weaker
+  security property than GCM. Tests: `aeslib.gcm` plus AES-128 KATs in
+  `aeslib.aes_core`. Design:
+  [Additional AES modes](DESIGN.md#additional-aes-modes-aes-128--aes-gcm).
 - **3.4 Safer key storage.** `SecretKey::save_to_file_encrypted`/
   `load_from_file_encrypted` — PBKDF2-HMAC-SHA256 (600,000 iterations) +
   AES-256-CTR + HMAC-SHA256, encrypt-then-MAC, a versioned wire format
@@ -224,22 +237,23 @@ per item rather than repeated here.
   `key.generate_increases_locked_memory_on_linux` plus wipe checks in
   `aeslib.key`. Design:
   [Minimizing key exposure in memory](DESIGN.md#minimizing-key-exposure-in-memory).
-- **Additional AES modes.** AES-128 key support plus `AesGcm` (NIST SP
-  800-38D), sharing a templated software backend and a separate AES-NI
-  key-expansion routine; its own `src/ghash.cpp`. CBC was deliberately
-  skipped — both backends are forward-cipher-only, and CBC is a weaker
-  security property than GCM. Tests: `aeslib.gcm` plus AES-128 KATs in
-  `aeslib.aes_core`. Design:
-  [Additional AES modes](DESIGN.md#additional-aes-modes-aes-128--aes-gcm).
-- **Generic types via templates.** `encrypt`/`decrypt_as<T>` overloads on
+- **3.7 Generic types via templates.** `encrypt`/`decrypt_as<T>` overloads on
   `Aes256Ctr`/`AesGcm` for any byte-viewable `T`, via C++17 SFINAE traits in
   `include/aeslib/byte_view.hpp`. Tests: `aeslib.generic`. Design:
   [Generic support for other types via templates](DESIGN.md#generic-support-for-other-types-via-templates).
-- **3.7 Foreign-language interface.** `include/aeslib/capi.h`/`src/capi.cpp`
+- **3.8 Foreign-language interface.** `include/aeslib/capi.h`/`src/capi.cpp`
   — opaque handles, status codes, explicit buffer ownership, built as
   `aeslib_c`; `bindings/python/` is the ctypes example (see below). Tests:
   `aeslib.capi_python`. Design:
   [Foreign-language interface](DESIGN.md#foreign-language-interface).
+- **3.9 Anything else.** Sanitizer builds (`AESLIB_ENABLE_SANITIZERS`, see
+  "Unit tests" above), a constant-time software S-box to avoid cache-timing
+  leaks in the non-hardware fallback, and a CI matrix that runs the *same*
+  binary under both AES-NI-present and AES-NI-absent emulated CPUs to make
+  the runtime-dispatch claim in 2.2 literal rather than assumed (see
+  "Continuous integration" above).
+- **3.10 Using CMake.** CMake is the sole build system (`CMakeLists.txt`);
+  no other build system is present in this repository.
 
 ## AI tool usage disclosure
 
