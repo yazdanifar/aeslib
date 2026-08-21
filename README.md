@@ -94,7 +94,7 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-Nine suites are registered:
+Ten suites are registered:
 
 - **`aeslib.aes_core`** — independent AES-256/AES-128 known-answer tests
   (FIPS-197 Appendix C.3/C.1, NIST SP 800-38A F.1.5, two NIST CAVP
@@ -131,6 +131,11 @@ Nine suites are registered:
   and GCM, plus wrong-length format-error checks (see
   `tests/test_generic.cpp` and DESIGN.md's
   [Generic support for other types via templates](DESIGN.md#generic-support-for-other-types-via-templates)).
+- **`aeslib.capi`** — null-pointer/invalid-argument validation for every
+  `include/aeslib/capi.h` entry point, CTR and GCM round-trips through the
+  C ABI, and a tampered-tag authentication-failure check (see
+  `tests/test_capi.cpp`). Only registered when `AESLIB_BUILD_C_API` is on
+  (the default), since it links against the `aeslib_c` shared library.
 
 Disable with `-DAESLIB_BUILD_TESTS=OFF` if you only want the library and
 harness.
@@ -180,6 +185,34 @@ ctest --test-dir build --output-on-failure -R capi_python
 See DESIGN.md's "Foreign-language interface" section for the ABI design
 rationale (why opaque handles and status codes, buffer-ownership rules,
 symbol visibility, and what's deliberately out of scope).
+
+## Using this library as a dependency
+
+Pull it into another CMake project with `FetchContent`, then link the
+`aeslib` target (add `aeslib_c` too if you also want the C ABI):
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(aeslib GIT_REPOSITORY <this-repo-url> GIT_TAG main)
+set(AESLIB_BUILD_TESTS OFF) # skip aeslib's own test suite in a consumer build
+FetchContent_MakeAvailable(aeslib)
+
+add_executable(my_app main.cpp)
+target_link_libraries(my_app PRIVATE aeslib)
+```
+
+(A checked-out copy also works with `add_subdirectory(path/to/aeslib)`
+instead of `FetchContent`.)
+
+```cpp
+#include "aeslib/aes256_ctr.hpp"
+#include "aeslib/key.hpp"
+
+aeslib::SecretKey key = aeslib::SecretKey::generate();
+aeslib::Container container = aeslib::Aes256Ctr::encrypt(key, plaintext);
+aeslib::save_container(container, "data.enc");
+key.save_to_file("data.key");
+```
 
 ## Continuous integration
 

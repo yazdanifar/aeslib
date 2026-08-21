@@ -26,6 +26,17 @@ endif()
 # One add_test() per suite, all against the same binary (see test_main.cpp's
 # suite-name filtering) — this is what lets CTest report each suite
 # separately while keeping a single zero-dependency test executable.
-foreach(suite aes_core ctr container key key_storage backend reference_vectors gcm generic)
+set(AESLIB_TEST_SUITES aes_core ctr container key key_storage backend reference_vectors gcm generic)
+
+# The C ABI (include/aeslib/capi.h) is only built when AESLIB_BUILD_C_API is
+# on, so its test suite only exists then too — aeslib_tests links directly
+# against the aeslib_c shared library it calls into.
+if(TARGET aeslib_c)
+  target_sources(aeslib_tests PRIVATE test_capi.cpp)
+  target_link_libraries(aeslib_tests PRIVATE aeslib_c)
+  list(APPEND AESLIB_TEST_SUITES capi)
+endif()
+
+foreach(suite ${AESLIB_TEST_SUITES})
   add_test(NAME aeslib.${suite} COMMAND aeslib_tests ${suite})
 endforeach()
