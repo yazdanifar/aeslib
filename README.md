@@ -13,30 +13,22 @@ dispatch mechanism, the on-disk container formats, and the nonce strategy.
 
 - **What**: AES-256-CTR (core) + AES-128/256-GCM (bonus), C++17, `std::byte`
   throughout, runtime hardware/software dispatch (AES-NI / ARM Crypto
-  Extensions / RISC-V Zkne), verified on real hardware *and* under QEMU with
-  the CPU's AES feature bit forced on/off — same binary, both outcomes.
-- **The one thing worth reading first if you only read one thing**: dispatch
-  doesn't stop at reading the CPUID/HWCAP/hwprobe bit. Before trusting it,
-  `cpu_detect.cpp` runs a real known-answer encryption through the hardware
-  backend and only reports "Hardware" if the answer matches — because a
-  hypervisor, emulator, or silicon erratum can misreport a capability bit for
-  an instruction it doesn't actually execute correctly. See DESIGN.md's
-  ["Functional self-verification of the hardware
-  path"](DESIGN.md#functional-self-verification-of-the-hardware-path).
+  Extensions / RISC-V Zkne), verified on real hardware and under QEMU with
+  the CPU's AES feature bit forced on/off.
+- Dispatch doesn't stop at reading the CPUID/HWCAP/hwprobe bit — it also
+  runs a known-answer encryption through the hardware backend and only
+  reports "Hardware" if the result matches, since a hypervisor/emulator/
+  erratum can misreport a capability bit. See DESIGN.md's ["Functional
+  self-verification"](DESIGN.md#functional-self-verification-of-the-hardware-path).
 - **Storage**: key and ciphertext always land in separate, versioned files;
   an optional passphrase-wrapped key format (PBKDF2 + AES-CTR + HMAC,
   encrypt-then-MAC) is also available.
 - **Memory**: `SecretKey` is move-only, has no raw-byte accessor, is
   `mlock`ed against swap, and is wiped with a compiler-proof (`volatile`)
   write on destruction.
-- **Scope**: all ten Section 3 bonus items are attempted — cheap here
-  specifically because the hardware/software dispatch abstraction (§1) made
-  each new backend or mode an incremental addition rather than a rewrite.
-  See DESIGN.md's ["Assumptions &
-  ambiguities"](DESIGN.md#assumptions--ambiguities) for what that scope call
-  traded off, and what would be cut first under a tighter deadline.
-- **Where to go next**: the sections below cover build/test/run instructions;
-  DESIGN.md has the reasoning behind every decision above.
+- **Scope**: all ten §3 bonus items are attempted — see DESIGN.md's
+  ["Assumptions & ambiguities"](DESIGN.md#assumptions--ambiguities) for that
+  tradeoff and what would be cut first under a tighter deadline.
 
 ## What it does
 
@@ -168,12 +160,9 @@ scripts/verify_isa_isolation.sh build
 
 `fuzz/` has three [libFuzzer](https://llvm.org/docs/LibFuzzer.html) harnesses
 for the parsers that take fully attacker-controlled bytes: the CTR and GCM
-on-disk container formats (`aeslib::deserialize`/`aeslib::deserialize_gcm`),
-and the passphrase-protected key file loader
-(`SecretKey::load_from_file_encrypted`). This is supplementary,
-developer-facing coverage on top of the hand-picked malformed-input unit
-tests in `aeslib.container`/`aeslib.gcm` above — not part of the default
-`ctest` run, and not required to build or test the library normally.
+container formats and the passphrase-protected key file loader. Supplementary
+coverage on top of the malformed-input unit tests above — not part of the
+default `ctest` run.
 
 Requires Clang (`-fsanitize=fuzzer` isn't available on GCC or MSVC):
 
@@ -185,50 +174,36 @@ cmake --build build-fuzz -j
 ./build-fuzz/fuzz_key_file -max_total_time=60
 ```
 
-Each harness builds `aeslib` itself with ASan+UBSan (same as
-`AESLIB_ENABLE_SANITIZERS` above) so a memory-safety or UB bug surfaces as a
-sanitizer report, not just a crash. **macOS note:** on Apple Silicon,
-Homebrew's LLVM Clang (`brew install llvm`) is what actually ships the
-`libclang_rt.fuzzer_osx.a` runtime `-fsanitize=fuzzer` needs — the Xcode
-Command Line Tools' bundled Clang doesn't include it and fails to link.
+Each harness builds `aeslib` with ASan+UBSan so a memory-safety or UB bug
+surfaces as a sanitizer report. **macOS note:** Homebrew's LLVM Clang
+(`brew install llvm`) is required on Apple Silicon — the Xcode Command Line
+Tools' bundled Clang doesn't ship the `-fsanitize=fuzzer` runtime.
 
 ## Foreign-language interface
 
-`include/aeslib/capi.h` / `src/capi.cpp` expose a C-compatible ABI — opaque
-handles, `aeslib_status` return codes instead of exceptions, and explicit
-buffer ownership — built as a shared library (`aeslib_c`) so it can be
-loaded from another language's runtime. It's built by default
-(`-DAESLIB_BUILD_C_API=OFF` to disable) and lands at `build/libaeslib_c.so`
-(Linux), `build/libaeslib_c.dylib` (macOS), or
-`build\Release\aeslib_c.dll`/`build\aeslib_c.dll` (Windows, depending on
-generator).
+`include/aeslib/capi.h` / `src/capi.cpp` expose a C-compatible ABI (opaque
+handles, status codes instead of exceptions) built as a shared library,
+`aeslib_c` (`-DAESLIB_BUILD_C_API=OFF` to disable). It lands at
+`build/libaeslib_c.so` (Linux), `build/libaeslib_c.dylib` (macOS), or
+`build\Release\aeslib_c.dll` (Windows).
 
-`bindings/python/` is the required "at least a minimal example of calling
-it from one other language": `aeslib_ffi.py` is a `ctypes` wrapper around
-the C ABI, and `demo.py` uses it to run an AES-256-CTR and an
-AES-256-GCM-with-AAD round trip, plus a tampered-tag rejection check —
-exactly the same shape as `main.cpp`'s harness, but calling exclusively
-through the C ABI rather than linking the C++ library. Run it directly:
+`bindings/python/` is the minimal example of calling it from another
+language: `aeslib_ffi.py` is a `ctypes` wrapper, `demo.py` round-trips
+AES-256-CTR and AES-256-GCM-with-AAD and checks tampered-tag rejection.
 
 ```sh
-# adjust path per platform (build/libaeslib_c.so on Linux, etc.)
 AESLIB_C_LIBRARY_PATH=build/libaeslib_c.dylib python3 bindings/python/demo.py
 ```
 
-It's also wired into the test suite as `aeslib.capi_python`, including
-under `-DAESLIB_ENABLE_SANITIZERS=ON` on both Linux and macOS (the build
-preloads ASan's own runtime ahead of the Python interpreter that runs the
-test — `LD_PRELOAD` on Linux, `DYLD_INSERT_LIBRARIES` on macOS against the
-framework's unshimmed interpreter binary, see DESIGN.md for why that
-matters), so `ctest` already covers it:
+It's also registered as the `aeslib.capi_python` CTest test, so `ctest`
+already covers it:
 
 ```sh
 ctest --test-dir build --output-on-failure -R capi_python
 ```
 
 See DESIGN.md's "Foreign-language interface" section for the ABI design
-rationale (why opaque handles and status codes, buffer-ownership rules,
-symbol visibility, and what's deliberately out of scope).
+rationale.
 
 ## Using this library as a dependency
 
@@ -274,21 +249,19 @@ key.save_to_file("data.key");
 | `qemu-riscv64` | Cross-compiled riscv64 build, run under emulation |
 <!-- markdownlint-enable MD013 -->
 
-The `qemu-aes-on`/`qemu-aes-off` pair is what makes brief 2.2's "same
-binary, correct on both a capable and an incapable machine" requirement
-literal rather than assumed. See DESIGN.md's ["Verifying dispatch is real,
-not assumed"](DESIGN.md#verifying-dispatch-is-real-not-assumed) for how each
-job was validated and what it does and doesn't prove.
+The `qemu-aes-on`/`qemu-aes-off` pair proves the same compiled binary is
+correct on both a capable and an incapable machine, rather than assuming it.
+See DESIGN.md's ["Verifying dispatch is real, not
+assumed"](DESIGN.md#verifying-dispatch-is-real-not-assumed) for what each job
+does and doesn't prove.
 
 ## Scope
 
-Beyond the challenge's core requirements (brief §2), this submission
-attempts all ten brief §3 bonus objectives — see DESIGN.md's ["Assumptions &
-ambiguities"](DESIGN.md#assumptions--ambiguities) for the judgment call
-behind attempting all ten rather than a focused subset. What each one is and
-why it's built the way it is lives in DESIGN.md's "Bonus objectives"
-section, linked per row below; this table is only the checklist and the test
-suite to look at.
+Beyond the core requirements, this submission attempts all ten §3 bonus
+objectives — see DESIGN.md's ["Assumptions &
+ambiguities"](DESIGN.md#assumptions--ambiguities) for that tradeoff. Each
+item's design rationale lives in DESIGN.md's "Bonus objectives", linked per
+row; this table is just the checklist and test suite to look at.
 
 <!-- markdownlint-disable MD013 -->
 | Brief item | What | Design | Tests |
