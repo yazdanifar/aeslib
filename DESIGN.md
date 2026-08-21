@@ -266,11 +266,12 @@ error codes.
   or use `AesGcm`, which already provides it. This is a scope boundary (the
   core brief specifies CTR, which is inherently unauthenticated), not an
   oversight.
-- **Nonce birthday bound** (§2): ~2^48 for CTR, a real bound rather than
-  "impossible." Enforced at 2^32 for GCM via the per-`SecretKey` invocation
-  counter, which doesn't survive a process restart or a freshly reloaded key.
-- **Software-path cache timing** is addressed — see "Constant-time software
-  S-box" (§1).
+- **Nonce birthday bound** ([§2](#2-nonceiv-strategy)): ~2^48 for CTR, a real
+  bound rather than "impossible." Enforced at 2^32 for GCM via the
+  per-`SecretKey` invocation counter, which doesn't survive a process
+  restart or a freshly reloaded key.
+- **Software-path cache timing** is addressed — see ["Constant-time software
+  S-box"](#constant-time-software-s-box).
 - **Symlink-planting on file writes** is addressed: every write path
   (`SecretKey::save_to_file[_encrypted]`, and `write_file` behind
   `save_container`/`save_gcm_container`) opens its destination with
@@ -305,8 +306,9 @@ complete submission. One subsection per item attempted.
 
 The dispatch model isolates all architecture-specific code behind one
 interface — functions with an identical signature per key size, plus a
-one-function capability check (§1). Adding ARM meant three touch points, none
-of which reached the mode drivers beyond a one-line `_ni` → `_hw` rename:
+one-function capability check ([§1](#1-cryptography-core)). Adding ARM meant
+three touch points, none of which reached the mode drivers beyond a one-line
+`_ni` → `_hw` rename:
 an `#elif` in `aes_core_hw.cpp`, three OS-specific branches in
 `cpu::has_hw_aes()` (Linux `getauxval`/`HWCAP_AES`, macOS
 `sysctlbyname("hw.optional.arm.FEAT_AES")`, Windows
@@ -578,8 +580,9 @@ Per the brief's request to flag ambiguities and state assumptions/reasoning
 — gathered here, argued in more depth where cited:
 
 - **Container format is deliberately minimal** — magic, version, nonce,
-  length, ciphertext, no extra metadata (§3). The version byte is what makes
-  it extensible later without a compatibility break.
+  length, ciphertext, no extra metadata
+  ([§3](#3-on-disk-container-format)). The version byte is what makes it
+  extensible later without a compatibility break.
 - **CBC was not implemented; GCM was, instead.** CBC needs a full AES
   *inverse* cipher in every backend (this codebase is forward-only) for a
   strictly weaker security property than GCM. Assumed the bonus rewards
@@ -590,23 +593,24 @@ Per the brief's request to flag ambiguities and state assumptions/reasoning
   than one correct on paper but untestable on most of it. Disclosed as a
   tradeoff in "Safer key storage," not a silent substitution.
 - **The GCM per-key invocation counter lives on the in-memory `SecretKey`
-  object, not on disk** (§2) — assumed this library's scope is a single
-  process using a key for its own lifetime, not a long-running service
-  needing durable usage accounting across restarts.
+  object, not on disk** ([§2](#2-nonceiv-strategy)) — assumed this library's
+  scope is a single process using a key for its own lifetime, not a
+  long-running service needing durable usage accounting across restarts.
 - **The RISC-V backend is verified under QEMU, not real silicon** — no
   native riscv64 CI runner was reliably available. Assumed an
   honestly-labeled emulated-only verification was preferable to skipping the
   third architecture or presenting it as fully hardware-verified.
 - **Nonces are random per encryption, not a persisted stateful counter**
-  (§2), accepting a birthday-bound collision risk (~2^48 for CTR, enforced
-  at 2^32 for GCM) over the complexity of carrying counter state across
-  restarts — a real limit, stated as such (§6), not "impossible."
+  ([§2](#2-nonceiv-strategy)), accepting a birthday-bound collision risk
+  (~2^48 for CTR, enforced at 2^32 for GCM) over the complexity of carrying
+  counter state across restarts — a real limit, stated as such
+  ([§6](#6-known-limitations--threat-model)), not "impossible."
 - **All ten bonus items were attempted**, despite the brief's stated
   preference for a couple of thoughtful partial attempts over maximal
   coverage — assumed reasonable specifically because the hardware/software
-  dispatch split (§1) turned each new backend/mode into an incremental
-  addition behind an existing abstraction, not new design surface. Under a
-  materially tighter deadline, the priority order would have been unit tests
-  → safer key storage → minimizing key exposure in memory, stopping there,
-  since those serve the brief's stated evaluation focus (security judgment,
-  correctness) most directly.
+  dispatch split ([§1](#1-cryptography-core)) turned each new backend/mode
+  into an incremental addition behind an existing abstraction, not new
+  design surface. Under a materially tighter deadline, the priority order
+  would have been unit tests → safer key storage → minimizing key exposure
+  in memory, stopping there, since those serve the brief's stated
+  evaluation focus (security judgment, correctness) most directly.

@@ -27,7 +27,7 @@ dispatch mechanism, the on-disk container formats, and the nonce strategy.
   `mlock`ed against swap, and is wiped with a compiler-proof (`volatile`)
   write on destruction.
 - **Scope**: all ten §3 bonus items are attempted — see DESIGN.md's
-  ["Assumptions & ambiguities"](DESIGN.md#assumptions-ambiguities) for that
+  ["Assumptions & ambiguities"](DESIGN.md#assumptions--ambiguities) for that
   tradeoff and what would be cut first under a tighter deadline.
 
 ## What it does
@@ -127,7 +127,7 @@ checking and why:
 | `aeslib.key_storage` | SHA-256/HMAC/PBKDF2 KATs; passphrase-key round-trip, tamper, and iteration-count validation | [Safer key storage](DESIGN.md#safer-key-storage) |
 | `aeslib.backend` | Dispatch-path assertion for CI; the `AESLIB_FORCE_SOFTWARE` override; hardware self-verification's rejection path | [Functional self-verification of the hardware path](DESIGN.md#functional-self-verification-of-the-hardware-path) |
 | `aeslib.reference_vectors` | Seven AES-256-CTR ciphertexts cross-checked against an independent implementation | [Nonce/IV strategy](DESIGN.md#2-nonceiv-strategy) |
-| `aeslib.gcm` | GHASH/GCM KATs, round-trip, tamper-detection, container edge cases | [Additional AES modes](DESIGN.md#additional-aes-modes-aes-128-aes-gcm) |
+| `aeslib.gcm` | GHASH/GCM KATs, round-trip, tamper-detection, container edge cases | [Additional AES modes](DESIGN.md#additional-aes-modes-aes-128--aes-gcm) |
 | `aeslib.generic` | Templated `encrypt`/`decrypt_as<T>` round-trips over several byte-viewable types | [Generic support via templates](DESIGN.md#generic-support-for-other-types-via-templates) |
 | `aeslib.capi` | C ABI argument validation, round-trips, tamper detection (only when `AESLIB_BUILD_C_API` is on, the default) | [Foreign-language interface](DESIGN.md#foreign-language-interface) |
 
@@ -258,7 +258,7 @@ assumed"](DESIGN.md#verifying-dispatch-is-real-not-assumed) for details.
 
 Beyond the core requirements, this submission attempts all ten §3 bonus
 objectives — see DESIGN.md's ["Assumptions &
-ambiguities"](DESIGN.md#assumptions-ambiguities) for that tradeoff. Each
+ambiguities"](DESIGN.md#assumptions--ambiguities) for that tradeoff. Each
 item's design rationale lives in DESIGN.md's "Bonus objectives", linked per
 row; this table is just the checklist and test suite to look at.
 
@@ -267,7 +267,7 @@ row; this table is just the checklist and test suite to look at.
 | --- | --- | --- | --- |
 | 3.1 Unit tests | CTest suite under `tests/` | (this file, "Unit tests" above) | — |
 | 3.2 Additional architectures | ARM AArch64 + RISC-V (RV64 Zkne) hardware backends | [Additional architectures](DESIGN.md#additional-architectures-arm-aarch64-and-risc-v) | `aeslib.aes_core`, `qemu-aarch64`, `qemu-riscv64`, `macos-arm64`, `linux-arm64-native` |
-| 3.3 Additional AES modes | AES-128 key support + AES-GCM | [Additional AES modes](DESIGN.md#additional-aes-modes-aes-128-aes-gcm) | `aeslib.gcm`, `aeslib.aes_core` |
+| 3.3 Additional AES modes | AES-128 key support + AES-GCM | [Additional AES modes](DESIGN.md#additional-aes-modes-aes-128--aes-gcm) | `aeslib.gcm`, `aeslib.aes_core` |
 | 3.4 Safer key storage | Passphrase-wrapped key file (PBKDF2 + AES-CTR + HMAC) | [Safer key storage](DESIGN.md#safer-key-storage) | `aeslib.key_storage` |
 | 3.5 Key generation ergonomics | No raw-byte accessor; `[[nodiscard]]` named factories | [Key generation ergonomics](DESIGN.md#key-generation-ergonomics) | `aeslib.key` |
 | 3.6 Minimizing key exposure in memory | `mlock`/`VirtualLock`, volatile-write wipe, raw-syscall I/O, wiped schedules | [Minimizing key exposure in memory](DESIGN.md#minimizing-key-exposure-in-memory) | `aeslib.key` |
