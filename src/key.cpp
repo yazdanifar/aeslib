@@ -7,10 +7,13 @@
 #include "internal.hpp"
 
 #if defined(_WIN32)
-#ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0A00
-#endif
 #include <windows.h>
+// Some SDK configurations don't expose this desktop-only flag even though
+// the underlying kernel support has existed since Windows 2000; define it
+// with its documented literal value if the headers didn't.
+#ifndef FILE_FLAG_OPEN_REPARSEPOINT
+#define FILE_FLAG_OPEN_REPARSEPOINT 0x00200000
+#endif
 #else
 #include <fcntl.h>
 #include <sys/mman.h>

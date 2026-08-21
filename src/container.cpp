@@ -6,10 +6,10 @@
 #include <string>
 
 #if defined(_WIN32)
-#ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0A00
-#endif
 #include <windows.h>
+#ifndef FILE_FLAG_OPEN_REPARSEPOINT
+#define FILE_FLAG_OPEN_REPARSEPOINT 0x00200000
+#endif
 #else
 #include <fcntl.h>
 #include <unistd.h>
