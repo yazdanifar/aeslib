@@ -114,7 +114,12 @@ Ten suites are registered:
   wrong-passphrase, tamper-detection, and iteration-count-validation tests
   (see DESIGN.md's [Safer key storage](DESIGN.md#safer-key-storage)).
 - **`aeslib.backend`** — a CI hook for asserting which dispatch path is
-  active (`tests/test_backend.cpp`, see the CI section below).
+  active (`tests/test_backend.cpp`, see the CI section below); the
+  `AESLIB_FORCE_SOFTWARE` override that lets the software path be exercised
+  on a hardware-capable machine; and a check that the hardware
+  self-verification's rejection path (see DESIGN.md's
+  [Functional self-verification of the hardware path](DESIGN.md#functional-self-verification-of-the-hardware-path))
+  actually rejects a wrong answer.
 - **`aeslib.reference_vectors`** — seven AES-256-CTR ciphertexts
   cross-checked against an independent implementation (Python's
   `cryptography` library, itself cross-verified against the `openssl`
@@ -147,6 +152,34 @@ cmake -B build-san -DCMAKE_BUILD_TYPE=Debug -DAESLIB_ENABLE_SANITIZERS=ON
 cmake --build build-san -j
 ctest --test-dir build-san --output-on-failure
 ```
+
+## Fuzzing
+
+`fuzz/` has three [libFuzzer](https://llvm.org/docs/LibFuzzer.html) harnesses
+for the parsers that take fully attacker-controlled bytes: the CTR and GCM
+on-disk container formats (`aeslib::deserialize`/`aeslib::deserialize_gcm`),
+and the passphrase-protected key file loader
+(`SecretKey::load_from_file_encrypted`). This is supplementary,
+developer-facing coverage on top of the hand-picked malformed-input unit
+tests in `aeslib.container`/`aeslib.gcm` above — not part of the default
+`ctest` run, and not required to build or test the library normally.
+
+Requires Clang (`-fsanitize=fuzzer` isn't available on GCC or MSVC):
+
+```sh
+cmake -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ -DAESLIB_BUILD_FUZZERS=ON -DAESLIB_BUILD_TESTS=OFF
+cmake --build build-fuzz -j
+./build-fuzz/fuzz_container -max_total_time=60
+./build-fuzz/fuzz_gcm_container -max_total_time=60
+./build-fuzz/fuzz_key_file -max_total_time=60
+```
+
+Each harness builds `aeslib` itself with ASan+UBSan (same as
+`AESLIB_ENABLE_SANITIZERS` above) so a memory-safety or UB bug surfaces as a
+sanitizer report, not just a crash. **macOS note:** on Apple Silicon,
+Homebrew's LLVM Clang (`brew install llvm`) is what actually ships the
+`libclang_rt.fuzzer_osx.a` runtime `-fsanitize=fuzzer` needs — the Xcode
+Command Line Tools' bundled Clang doesn't include it and fails to link.
 
 ## Foreign-language interface
 

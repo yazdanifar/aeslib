@@ -238,3 +238,33 @@ if(AESLIB_BUILD_TESTS)
     endif()
   endif()
 endif()
+
+# Supplementary, developer-facing coverage for the three parsers that take
+# fully attacker-controlled bytes (container.hpp/aes_gcm.hpp's deserialize
+# functions, and SecretKey::load_from_file_encrypted()) — see README.md's
+# "Fuzzing" section and DESIGN.md. Off by default and libFuzzer/Clang-only:
+# -fsanitize=fuzzer isn't available on GCC/MSVC, and this is a local/CI
+# developer tool, not something a reviewer building the library needs.
+option(AESLIB_BUILD_FUZZERS "Build libFuzzer harnesses under fuzz/ (Clang only)" OFF)
+if(AESLIB_BUILD_FUZZERS)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "AESLIB_BUILD_FUZZERS requires Clang (libFuzzer via -fsanitize=fuzzer); "
+                         "current compiler is ${CMAKE_CXX_COMPILER_ID}.")
+  endif()
+
+  # The harnesses are only as useful as the library code they call: without
+  # ASan/UBSan instrumenting aeslib itself, a fuzzer run would only catch
+  # crashes, not the memory-safety/UB bugs sanitizers exist to surface. Skip
+  # if AESLIB_ENABLE_SANITIZERS already added the same flags above.
+  if(NOT AESLIB_ENABLE_SANITIZERS)
+    target_compile_options(aeslib PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(aeslib PUBLIC -fsanitize=address,undefined)
+  endif()
+
+  foreach(AESLIB_FUZZ_TARGET fuzz_container fuzz_gcm_container fuzz_key_file)
+    add_executable(${AESLIB_FUZZ_TARGET} fuzz/${AESLIB_FUZZ_TARGET}.cpp)
+    target_link_libraries(${AESLIB_FUZZ_TARGET} PRIVATE aeslib)
+    target_compile_options(${AESLIB_FUZZ_TARGET} PRIVATE -fsanitize=fuzzer,address,undefined -g -O1)
+    target_link_options(${AESLIB_FUZZ_TARGET} PRIVATE -fsanitize=fuzzer,address,undefined)
+  endforeach()
+endif()

@@ -59,6 +59,17 @@ Block aes128_encrypt_block_riscv(const SecretKey& key, const Block& block);
 Block aes256_encrypt_block_hw(const SecretKey& key, const Block& block);
 Block aes128_encrypt_block_hw(const SecretKey& key, const Block& block);
 
+// True iff calling `hw_encrypt(key, plaintext)` yields `expected`. This is
+// the comparison primitive behind cpu_detect.cpp's hardware
+// self-verification (see active_backend()/has_hw_aes()), which calls it with
+// real FIPS-197 known-answer vectors before trusting the hardware path.
+// Exposed here (rather than kept file-local to cpu_detect.cpp) so tests can
+// call it directly with a deliberately wrong `expected` value, proving the
+// "hardware claims an incorrect answer" rejection path actually rejects,
+// without needing genuinely broken hardware to observe it.
+bool kat_matches(Block (*hw_encrypt)(const SecretKey&, const Block&), const SecretKey& key,
+                  const Block& plaintext, const Block& expected);
+
 // GF(2^128) multiplication with the GCM reduction polynomial (NIST SP
 // 800-38D Algorithm 1), branch-free/constant-time w.r.t. both operands.
 Block gf128_mul(const Block& x, const Block& y);

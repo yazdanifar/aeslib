@@ -23,6 +23,16 @@ jobs:
         run: ctest --test-dir build --output-on-failure
       - name: Run harness
         run: ./build/aes_harness
+      # AESLIB_FORCE_SOFTWARE (see DESIGN.md's "Functional self-verification
+      # of the hardware path") is the one testing override dispatch offers —
+      # deliberately software-only. This runner has real AES-NI, so it's the
+      # natural place to prove the software path still round-trips correctly
+      # when forced on a hardware-capable machine, closing bonus 3.1's "both
+      # paths tested where possible" without needing a second QEMU leg.
+      - name: Test with AESLIB_FORCE_SOFTWARE
+        run: './build/aes_harness | tee /dev/stderr | grep -q "Backend in use: Software"'
+        env:
+          AESLIB_FORCE_SOFTWARE: "1"
       - uses: actions/upload-artifact@v5
         with:
           name: linux-x86_64-binaries

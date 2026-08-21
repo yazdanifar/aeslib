@@ -31,6 +31,16 @@ namespace detail {
 // SecretKey remains the explicit, deliberately-named save_to_file().
 const std::array<std::byte, kKeySizeBytes>& key_bytes(const SecretKey& key) noexcept;
 
+// Constructs a SecretKey directly from raw bytes rather than CSPRNG
+// generation or file loading — used by cpu_detect.cpp's hardware
+// self-verification (which needs to encrypt a fixed FIPS-197 KAT vector, not
+// a randomly generated key) and by tests, the same restricted-audience
+// pattern as key_bytes() above. `bytes` must point to at least
+// static_cast<std::size_t>(size) readable bytes; only that many are copied,
+// matching load_from_file()'s behavior (unused capacity for a 16-byte
+// AES-128 key stays zero-filled).
+SecretKey key_from_bytes(const std::byte* bytes, KeySize size);
+
 // Atomically increments `key`'s AES-GCM invocation counter and returns the
 // count *before* this increment (i.e. how many prior AesGcm::encrypt() calls
 // have already consumed a fresh random nonce under this key object). Used by
@@ -103,6 +113,7 @@ public:
 private:
     friend const std::array<std::byte, kKeySizeBytes>& detail::key_bytes(const SecretKey&) noexcept;
     friend std::uint64_t detail::consume_gcm_invocation(const SecretKey&) noexcept;
+    friend SecretKey detail::key_from_bytes(const std::byte*, KeySize);
 
     SecretKey();
     void wipe() noexcept;

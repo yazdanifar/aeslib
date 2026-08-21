@@ -1,5 +1,6 @@
 #include "aeslib/key.hpp"
 
+#include <algorithm>
 #include <cstdint>
 
 #include "aeslib/exceptions.hpp"
@@ -221,6 +222,13 @@ SecretKey SecretKey::load_from_file(const std::filesystem::path& path) {
 
 namespace detail {
 const std::array<std::byte, kKeySizeBytes>& key_bytes(const SecretKey& key) noexcept { return key.bytes_; }
+
+SecretKey key_from_bytes(const std::byte* bytes, KeySize size) {
+    SecretKey key;
+    key.size_ = size;
+    std::copy_n(bytes, static_cast<std::size_t>(size), key.bytes_.begin());
+    return key;
+}
 
 std::uint64_t consume_gcm_invocation(const SecretKey& key) noexcept {
     return key.gcm_invocations_.fetch_add(1, std::memory_order_relaxed);

@@ -145,11 +145,60 @@ one OS-provided capability flag), not by execution — which is also why the
 two native-hardware jobs matter: they run the real detection code against
 real silicon, not an emulator's approximation of it.
 
-A standalone known-answer test (FIPS-197 Appendix C.3, AES-256) is also run
-directly against `aes256_encrypt_block_hw()` and `aes256_encrypt_block_soft()`
-in `tests/test_aes_core.cpp`, confirming both produce the exact published
-ciphertext block for the same key/plaintext on every CI run, including the
-ARM legs.
+Standalone known-answer tests (FIPS-197 Appendix C.1 for AES-128, Appendix
+C.3 for AES-256) are also run directly against `aes*_encrypt_block_hw()` and
+`aes*_encrypt_block_soft()` in `tests/test_aes_core.cpp`, confirming both
+produce the exact published ciphertext block for the same key/plaintext on
+every CI run, including the ARM legs. These are the same two vectors
+`src/kat_vector.hpp` exposes to `cpu_detect.cpp`, described next.
+
+### Functional self-verification of the hardware path
+
+Everything above proves dispatch reads the *right* capability flag for the
+*right* CPU model. It doesn't prove the flag itself is trustworthy — and it
+isn't always: this project's own riscv64 CI leg hit a case where `hwprobe`
+under-reports a real, working extension (see "RISC-V (RV64 Zkne)" below), and
+the opposite failure mode is just as real in the kind of environment a
+security team's threat model has to account for — a hypervisor or emulator
+that advertises a CPU feature bit for an instruction it doesn't actually
+execute correctly, or a silicon erratum on real hardware. Trusting the
+feature bit alone in that case means silently encrypting with the wrong
+output instead of falling back to the software path that's always correct.
+
+`cpu::has_hw_aes()` closes that gap with a functional check, not a second
+detection mechanism: once the per-architecture capability flag (`CPUID`,
+`HWCAP_AES`, `sysctlbyname`, `IsProcessorFeaturePresent`, or `hwprobe`) says
+an extension is present, it runs one AES-128 and one AES-256 FIPS-197
+known-answer encryption through that architecture's real hardware backend
+(`aes128_encrypt_block_hw`/`aes256_encrypt_block_hw`) and only returns `true`
+if both match the published ciphertext — via `detail::kat_matches()`
+(`src/internal.hpp`), which takes the encrypt function as a parameter
+specifically so `tests/test_backend.cpp` can call it directly with a
+deliberately wrong expected value and confirm the rejection path actually
+rejects, without needing genuinely broken hardware to observe it. Both key
+sizes are checked because `active_backend()` is one global decision gating
+*both* `aes128_*_hw` and `aes256_*_hw` — verifying only AES-256 would leave
+an AES-128-specific hardware bug completely unguarded. The check runs once,
+inside the same function-local `static` that already memoizes the raw
+capability read, so it costs two block encryptions at process startup, not
+per call.
+
+**What this doesn't protect against:** a hardware bug that only manifests on
+inputs other than these two fixed vectors — it's a spot check, not exhaustive
+verification, the same limitation any known-answer test has.
+
+**Testing the software path on hardware-capable machines
+(`AESLIB_FORCE_SOFTWARE`).** The hardware path is naturally exercisable
+wherever the CPU actually supports it; the missing case was proving the
+*software* path still works correctly on a machine that also has hardware
+support. `aeslib::active_backend()` reads `AESLIB_FORCE_SOFTWARE` and, if set
+to a non-empty value other than `"0"`, returns `Backend::Software`
+unconditionally — deliberately one-directional. There is no
+`AESLIB_FORCE_HARDWARE`: forcing the hardware branch on a CPU that genuinely
+lacks the instruction would `SIGILL`, and there's no legitimate testing need
+for it since the hardware path is already reachable by running on hardware
+that has it. This mirrors how OpenSSL's `OPENSSL_ia32cap` is conventionally
+used — to zero out feature bits for testing, never to fake them in.
 
 ### Constant-time software S-box
 

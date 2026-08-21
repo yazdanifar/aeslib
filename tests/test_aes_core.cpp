@@ -9,6 +9,7 @@
 #include "aeslib/key.hpp"
 #include "src/aes_key_schedule.hpp"
 #include "src/internal.hpp"
+#include "src/kat_vector.hpp"
 #include "test_support.hpp"
 
 namespace {
@@ -16,17 +17,14 @@ namespace {
 using aeslib::SecretKey;
 using aeslib::detail::Block;
 
-// FIPS-197 Appendix C.3: AES-256 encryption of a single block.
-constexpr unsigned char kKatKey[32] = {
-    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
-};
-constexpr unsigned char kKatPlaintext[16] = {
-    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
-};
-constexpr unsigned char kKatCiphertext[16] = {
-    0x8e, 0xa2, 0xb7, 0xca, 0x51, 0x67, 0x45, 0xbf, 0xea, 0xfc, 0x49, 0x90, 0x4b, 0x49, 0x60, 0x89,
-};
+// FIPS-197 Appendix C.3: AES-256 encryption of a single block. Shared with
+// cpu_detect.cpp's hardware self-verification via src/kat_vector.hpp.
+using aeslib::detail::kKat256Ciphertext;
+using aeslib::detail::kKat256Key;
+using aeslib::detail::kKat256Plaintext;
+constexpr const unsigned char (&kKatKey)[32] = kKat256Key;
+constexpr const unsigned char (&kKatPlaintext)[16] = kKat256Plaintext;
+constexpr const unsigned char (&kKatCiphertext)[16] = kKat256Ciphertext;
 
 // SecretKey has no public constructor from raw bytes (deliberately, see
 // key.hpp) — round-trip through a temp file the same way a real caller
@@ -253,16 +251,11 @@ AESLIB_TEST(aes_core, fourth_kat_vector_nist_cavp) {
 }
 
 namespace {
-// FIPS-197 Appendix C.1: AES-128 encryption of a single block.
-constexpr unsigned char kKat128Key[16] = {
-    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-};
-constexpr unsigned char kKat128Plaintext[16] = {
-    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
-};
-constexpr unsigned char kKat128Ciphertext[16] = {
-    0x69, 0xc4, 0xe0, 0xd8, 0x6a, 0x7b, 0x04, 0x30, 0xd8, 0xcd, 0xb7, 0x80, 0x70, 0xb4, 0xc5, 0x5a,
-};
+// FIPS-197 Appendix C.1: AES-128 encryption of a single block. Shared with
+// cpu_detect.cpp's hardware self-verification via src/kat_vector.hpp.
+using aeslib::detail::kKat128Ciphertext;
+using aeslib::detail::kKat128Key;
+using aeslib::detail::kKat128Plaintext;
 } // namespace
 
 AESLIB_TEST(aes_core, software_matches_fips197_aes128_kat) {
