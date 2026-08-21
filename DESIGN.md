@@ -116,6 +116,29 @@ riscv64 → `_riscv`, anything else → throws). `aes256_ctr.cpp` /
 what let ARM and RISC-V support (below) each be added with a one-line change
 to each mode driver rather than a rewrite.
 
+```mermaid
+flowchart LR
+    subgraph drivers["Mode drivers"]
+        CTR["aes256_ctr.cpp"]
+        GCM["aes_gcm.cpp"]
+    end
+    HW["aes_core_hw.cpp\naesNNN_encrypt_block_hw()"]
+    subgraph backends["One real backend per build (#if/#elif)"]
+        NI["aes_core_ni.cpp\namd64 AES-NI"]
+        ARM["aes_core_arm.cpp\nAArch64 Crypto Extensions"]
+        RISCV["aes_core_riscv.cpp\nRV64 Zkne"]
+    end
+    CTR --> HW
+    GCM --> HW
+    HW -->|x86| NI
+    HW -->|arm64| ARM
+    HW -->|riscv64| RISCV
+```
+
+Only `aes_core_hw.cpp` and the three backend files themselves know this
+split exists — every other file, including the mode drivers above, only
+ever sees one arch-neutral `_hw` symbol per key size.
+
 ### Verifying dispatch is real, not assumed
 
 The requirement is that the *same binary* be correct on a machine with
@@ -203,6 +226,21 @@ an AES-128-specific hardware bug completely unguarded. The check runs once,
 inside the same function-local `static` that already memoizes the raw
 capability read, so it costs two block encryptions at process startup, not
 per call.
+
+```mermaid
+flowchart TD
+    A["active_backend() called"] --> B{"Capability bit set?\nCPUID / HWCAP / sysctlbyname /\nIsProcessorFeaturePresent / hwprobe"}
+    B -- "no" --> S["Backend::Software"]
+    B -- "yes" --> C["Run AES-128 + AES-256 FIPS-197 KAT\nthrough the real hardware backend"]
+    C --> D{"Both match the\npublished ciphertext?"}
+    D -- "no" --> S
+    D -- "yes" --> H["Backend::Hardware"]
+```
+
+Both the capability read and this functional check happen once, memoized in
+the same `static`; the result is what every subsequent `Aes256Ctr`/`AesGcm`
+call uses. `AESLIB_FORCE_SOFTWARE` (below) short-circuits the whole diagram
+straight to `Backend::Software`, one-directionally.
 
 **What this doesn't protect against:** a hardware bug that only manifests on
 inputs other than these two fixed vectors — it's a spot check, not exhaustive
