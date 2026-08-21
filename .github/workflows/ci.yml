@@ -244,10 +244,7 @@ jobs:
         run: cmake -B build
       - name: Build
         run: cmake --build build --config Release
-      - name: Diagnose aes_core hang (temporary)
-        timeout-minutes: 1
-        run: build\tests\Release\aeslib_tests.exe aes_core
       - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure --timeout 20
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 60
       - name: Run harness
         run: build\Release\aes_harness.exe

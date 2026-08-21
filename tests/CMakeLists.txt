@@ -40,8 +40,7 @@ if(TARGET aeslib_c)
   # only resolves on the machine that built it), point at $ORIGIN/@loader_path
   # so the test binary finds libaeslib_c next to itself wherever it's run
   # from — e.g. after being downloaded as a CI artifact onto a different
-  # runner for the qemu-aes-on/off jobs. No effect on Windows, where DLL
-  # search already includes the executable's own directory by default.
+  # runner for the qemu-aes-on/off jobs.
   if(NOT MSVC)
     set_target_properties(aeslib_tests PROPERTIES
       BUILD_RPATH_USE_ORIGIN ON
@@ -52,6 +51,18 @@ if(TARGET aeslib_c)
     else()
       set_target_properties(aeslib_tests PROPERTIES BUILD_RPATH "$ORIGIN")
     endif()
+  else()
+    # Windows has no rpath equivalent — the loader searches the exe's own
+    # directory, but under the MSVC multi-config generator each target gets
+    # its own per-target output directory, so aeslib_c.dll (build/Release/)
+    # and aeslib_tests.exe (build/tests/Release/) don't end up side by side
+    # the way they do on Unix. Without this, the DLL is simply undiscoverable
+    # and the process fails to start. Copying rather than a shared output
+    # directory keeps each target's default layout otherwise untouched.
+    add_custom_command(TARGET aeslib_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:aeslib_c>" "$<TARGET_FILE_DIR:aeslib_tests>"
+    )
   endif()
 endif()
 
