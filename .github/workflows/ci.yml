@@ -47,11 +47,8 @@ jobs:
       - name: Run tests under qemu -cpu Westmere (AES-NI present)
         env:
           AESLIB_EXPECTED_BACKEND: hardware
-          LD_LIBRARY_PATH: .
         run: qemu-x86_64-static -cpu Westmere tests/aeslib_tests
       - name: Run harness under qemu -cpu Westmere
-        env:
-          LD_LIBRARY_PATH: .
         run: qemu-x86_64-static -cpu Westmere aes_harness
 
   # Same binary again, this time under a CPU model with AES-NI masked off —
@@ -74,11 +71,8 @@ jobs:
       - name: Run tests under qemu -cpu Nehalem (no AES-NI)
         env:
           AESLIB_EXPECTED_BACKEND: software
-          LD_LIBRARY_PATH: .
         run: qemu-x86_64-static -cpu Nehalem tests/aeslib_tests
       - name: Run harness under qemu -cpu Nehalem
-        env:
-          LD_LIBRARY_PATH: .
         run: qemu-x86_64-static -cpu Nehalem aes_harness
 
   # Cross-compiles for aarch64 and runs the result under qemu-aarch64 -cpu

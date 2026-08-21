@@ -35,6 +35,24 @@ if(TARGET aeslib_c)
   target_sources(aeslib_tests PRIVATE test_capi.cpp)
   target_link_libraries(aeslib_tests PRIVATE aeslib_c)
   list(APPEND AESLIB_TEST_SUITES capi)
+
+  # Rather than relying on CMake's default absolute build-tree rpath (which
+  # only resolves on the machine that built it), point at $ORIGIN/@loader_path
+  # so the test binary finds libaeslib_c next to itself wherever it's run
+  # from — e.g. after being downloaded as a CI artifact onto a different
+  # runner for the qemu-aes-on/off jobs. No effect on Windows, where DLL
+  # search already includes the executable's own directory by default.
+  if(NOT MSVC)
+    set_target_properties(aeslib_tests PROPERTIES
+      BUILD_RPATH_USE_ORIGIN ON
+      INSTALL_RPATH_USE_LINK_PATH TRUE
+    )
+    if(APPLE)
+      set_target_properties(aeslib_tests PROPERTIES BUILD_RPATH "@loader_path")
+    else()
+      set_target_properties(aeslib_tests PROPERTIES BUILD_RPATH "$ORIGIN")
+    endif()
+  endif()
 endif()
 
 foreach(suite ${AESLIB_TEST_SUITES})
