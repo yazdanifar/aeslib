@@ -2,12 +2,41 @@
 
 A small C++17 library implementing AES-256-CTR and AES-GCM (AES-128 or
 AES-256) encryption/decryption with runtime dispatch between a hardware path
-(AES-NI on amd64, ARM AArch64 Crypto Extensions on arm64) and a portable
-software fallback, plus a minimal versioned container format for storing
-encrypted data separately from its key.
+(AES-NI on amd64, ARM AArch64 Crypto Extensions on arm64, RV64 Zkne on
+riscv64) and a portable software fallback, plus a minimal versioned
+container format for storing encrypted data separately from its key.
 
 See [DESIGN.md](DESIGN.md) for the architecture, the hardware/software
 dispatch mechanism, the on-disk container formats, and the nonce strategy.
+
+## TL;DR
+
+- **What**: AES-256-CTR (core) + AES-128/256-GCM (bonus), C++17, `std::byte`
+  throughout, runtime hardware/software dispatch (AES-NI / ARM Crypto
+  Extensions / RISC-V Zkne), verified on real hardware *and* under QEMU with
+  the CPU's AES feature bit forced on/off — same binary, both outcomes.
+- **The one thing worth reading first if you only read one thing**: dispatch
+  doesn't stop at reading the CPUID/HWCAP/hwprobe bit. Before trusting it,
+  `cpu_detect.cpp` runs a real known-answer encryption through the hardware
+  backend and only reports "Hardware" if the answer matches — because a
+  hypervisor, emulator, or silicon erratum can misreport a capability bit for
+  an instruction it doesn't actually execute correctly. See DESIGN.md's
+  ["Functional self-verification of the hardware
+  path"](DESIGN.md#functional-self-verification-of-the-hardware-path).
+- **Storage**: key and ciphertext always land in separate, versioned files;
+  an optional passphrase-wrapped key format (PBKDF2 + AES-CTR + HMAC,
+  encrypt-then-MAC) is also available.
+- **Memory**: `SecretKey` is move-only, has no raw-byte accessor, is
+  `mlock`ed against swap, and is wiped with a compiler-proof (`volatile`)
+  write on destruction.
+- **Scope**: all ten Section 3 bonus items are attempted — cheap here
+  specifically because the hardware/software dispatch abstraction (§1) made
+  each new backend or mode an incremental addition rather than a rewrite.
+  See DESIGN.md's ["Assumptions &
+  ambiguities"](DESIGN.md#assumptions--ambiguities) for what that scope call
+  traded off, and what would be cut first under a tighter deadline.
+- **Where to go next**: the sections below cover build/test/run instructions;
+  DESIGN.md has the reasoning behind every decision above.
 
 ## What it does
 
@@ -30,8 +59,8 @@ dispatch mechanism, the on-disk container formats, and the nonce strategy.
   `SecretKey::save_to_file` / `load_from_file` — persist ciphertext and key
   to **separate** files.
 - `aeslib::active_backend()` — reports whether the hardware (AES-NI on
-  amd64, ARM Crypto Extensions on arm64) or software AES path is in use on
-  the current machine.
+  amd64, ARM Crypto Extensions on arm64, RV64 Zkne on riscv64) or software
+  AES path is in use on the current machine.
 - `include/aeslib/capi.h` / the `aeslib_c` shared library — a C-compatible
   ABI (opaque handles, status codes, no exceptions crossing the boundary)
   covering key generation, AES-256-CTR, and AES-GCM, for calling the
@@ -94,53 +123,21 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-Ten suites are registered:
+Ten suites are registered (source under `tests/`, one file per suite unless
+noted); see each one's linked DESIGN.md section for what it's actually
+checking and why:
 
-- **`aeslib.aes_core`** — independent AES-256/AES-128 known-answer tests
-  (FIPS-197 Appendix C.3/C.1, NIST SP 800-38A F.1.5, two NIST CAVP
-  all-zero/all-ones edge cases) against both backends, plus an exhaustive
-  check of the software backend's constant-time S-box against the
-  canonical 256-entry table (see DESIGN.md's
-  [Constant-time software S-box](DESIGN.md#constant-time-software-s-box)).
-- **`aeslib.ctr`** — round-trips at a range of sizes (including
-  partial-final-block cases), correct counter increment across multiple
-  blocks, a boundary test for the 32-bit block-counter guard, CTR's
-  expected bit-flip malleability, and nonce freshness.
-- **`aeslib.container`** / **`aeslib.key`** — file-format edge cases (bad
-  magic, unsupported version, truncated/mismatched-length data).
-- **`aeslib.key_storage`** — known-answer tests for the from-scratch
-  SHA-256 (FIPS 180-4), HMAC-SHA256 (RFC 4231), and PBKDF2-HMAC-SHA256
-  (RFC 7914) primitives, plus passphrase-protected key file round-trip,
-  wrong-passphrase, tamper-detection, and iteration-count-validation tests
-  (see DESIGN.md's [Safer key storage](DESIGN.md#safer-key-storage)).
-- **`aeslib.backend`** — a CI hook for asserting which dispatch path is
-  active (`tests/test_backend.cpp`, see the CI section below); the
-  `AESLIB_FORCE_SOFTWARE` override that lets the software path be exercised
-  on a hardware-capable machine; and a check that the hardware
-  self-verification's rejection path (see DESIGN.md's
-  [Functional self-verification of the hardware path](DESIGN.md#functional-self-verification-of-the-hardware-path))
-  actually rejects a wrong answer.
-- **`aeslib.reference_vectors`** — seven AES-256-CTR ciphertexts
-  cross-checked against an independent implementation (Python's
-  `cryptography` library, itself cross-verified against the `openssl`
-  CLI — see `tests/test_reference_vectors.cpp`).
-- **`aeslib.gcm`** — GHASH known-answer tests, AES-128-GCM/AES-256-GCM
-  known-answer tests cross-checked against two independent implementations
-  (Python's `cryptography` and `pycryptodome`), round-trip/
-  tamper-detection/wrong-key tests, GCM container format edge cases, and
-  nonce/tag freshness checks (see `tests/test_gcm.cpp` and DESIGN.md's
-  [Additional AES modes](DESIGN.md#additional-aes-modes-aes-128--aes-gcm)).
-- **`aeslib.generic`** — round-trips of the templated `encrypt`/
-  `decrypt_as<T>` overloads over `std::vector<uint8_t>`, `std::array`,
-  `std::string`, `std::vector<int32_t>`, and a plain struct, for both CTR
-  and GCM, plus wrong-length format-error checks (see
-  `tests/test_generic.cpp` and DESIGN.md's
-  [Generic support for other types via templates](DESIGN.md#generic-support-for-other-types-via-templates)).
-- **`aeslib.capi`** — null-pointer/invalid-argument validation for every
-  `include/aeslib/capi.h` entry point, CTR and GCM round-trips through the
-  C ABI, and a tampered-tag authentication-failure check (see
-  `tests/test_capi.cpp`). Only registered when `AESLIB_BUILD_C_API` is on
-  (the default), since it links against the `aeslib_c` shared library.
+| Suite | Covers | Design reasoning |
+| --- | --- | --- |
+| `aeslib.aes_core` | AES-256/AES-128 known-answer tests against both backends; exhaustive constant-time-S-box check | [Constant-time software S-box](DESIGN.md#constant-time-software-s-box) |
+| `aeslib.ctr` | Round-trips, partial-final-block, counter increment, overflow boundary, bit-flip malleability, nonce freshness | [Nonce/IV strategy](DESIGN.md#2-nonceiv-strategy) |
+| `aeslib.container`, `aeslib.key` | On-disk format edge cases (bad magic, bad version, truncated data) | [On-disk container format](DESIGN.md#3-on-disk-container-format) |
+| `aeslib.key_storage` | SHA-256/HMAC/PBKDF2 KATs; passphrase-key round-trip, tamper, and iteration-count validation | [Safer key storage](DESIGN.md#safer-key-storage) |
+| `aeslib.backend` | Dispatch-path assertion for CI; the `AESLIB_FORCE_SOFTWARE` override; hardware self-verification's rejection path | [Functional self-verification of the hardware path](DESIGN.md#functional-self-verification-of-the-hardware-path) |
+| `aeslib.reference_vectors` | Seven AES-256-CTR ciphertexts cross-checked against an independent implementation | [Nonce/IV strategy](DESIGN.md#2-nonceiv-strategy) |
+| `aeslib.gcm` | GHASH/GCM KATs, round-trip, tamper-detection, container edge cases | [Additional AES modes](DESIGN.md#additional-aes-modes-aes-128--aes-gcm) |
+| `aeslib.generic` | Templated `encrypt`/`decrypt_as<T>` round-trips over several byte-viewable types | [Generic support via templates](DESIGN.md#generic-support-for-other-types-via-templates) |
+| `aeslib.capi` | C ABI argument validation, round-trips, tamper detection (only when `AESLIB_BUILD_C_API` is on, the default) | [Foreign-language interface](DESIGN.md#foreign-language-interface) |
 
 Disable with `-DAESLIB_BUILD_TESTS=OFF` if you only want the library and
 harness.
@@ -249,85 +246,46 @@ key.save_to_file("data.key");
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push/PR: native build+test on
-Linux (GCC) and Windows (MSVC), an ASan+UBSan build, and — the interesting
-part — the *same compiled x86_64 binary* run twice under `qemu-x86_64` with
-two different emulated CPU models, one advertising AES-NI and one without
-(`qemu-aes-on`/`qemu-aes-off`). A cross-compiled aarch64 build is run under
-`qemu-aarch64 -cpu max` to exercise the ARM Crypto Extensions backend under
-emulation (there's no matching "no crypto" leg for aarch64 — see DESIGN.md
-for why). Two more jobs (`macos-arm64` on real Apple Silicon,
-`linux-arm64-native` on a GitHub-hosted Arm Linux runner) build and test
-natively on genuine ARM64 hardware, complementing the emulated legs. That
-directly exercises brief 2.2's requirement that a single binary pick the
-correct path on two different machines, rather than relying on it having
-only ever been built and run on one. See DESIGN.md's "How the dispatch is
-verified" section for how this was validated and its limitations.
+`.github/workflows/ci.yml` runs on every push/PR:
+
+| Job | What it runs |
+| --- | --- |
+| `linux-x86_64` | Native build + test (GCC), real AES-NI hardware |
+| `windows-msvc` | Native build + test (MSVC) |
+| `linux-sanitizers` | ASan+UBSan build + test |
+| `qemu-aes-on` / `qemu-aes-off` | The *same* compiled x86_64 binary, run under two emulated CPU models — one advertising AES-NI, one without |
+| `qemu-aarch64` | Cross-compiled aarch64 build, run under emulation |
+| `macos-arm64` / `linux-arm64-native` | Native build + test on real ARM64 hardware |
+| `qemu-riscv64` | Cross-compiled riscv64 build, run under emulation |
+
+The `qemu-aes-on`/`qemu-aes-off` pair is what makes brief 2.2's "same
+binary, correct on both a capable and an incapable machine" requirement
+literal rather than assumed. See DESIGN.md's ["Verifying dispatch is real,
+not assumed"](DESIGN.md#verifying-dispatch-is-real-not-assumed) for how each
+job was validated and what it does and doesn't prove.
 
 ## Scope
 
-Beyond the challenge's core requirements, this submission implements all ten
-Section 3 bonus objectives. Each entry below is what was built, its test
-coverage, and where to read the design rationale — kept in DESIGN.md, linked
-per item rather than repeated here.
+Beyond the challenge's core requirements (brief §2), this submission
+attempts all ten brief §3 bonus objectives — see DESIGN.md's ["Assumptions &
+ambiguities"](DESIGN.md#assumptions--ambiguities) for the judgment call
+behind attempting all ten rather than a focused subset. What each one is and
+why it's built the way it is lives in DESIGN.md's "Bonus objectives"
+section, linked per row below; this table is only the checklist and the test
+suite to look at.
 
-- **3.1 Unit tests.** CTest suite under `tests/` (see "Unit tests" above).
-- **3.2 Additional architectures.** Two extra hardware backends beyond
-  x86-64 AES-NI, both dispatched by `aes_core_hw.cpp` with no changes to
-  `Aes256Ctr`/`AesGcm`:
-  - `src/aes_core_arm.cpp` — AArch64 Crypto Extensions intrinsics
-    (`vaeseq_u8`/`vaesmcq_u8`), detected via
-    `getauxval`/`sysctlbyname`/`IsProcessorFeaturePresent` depending on OS.
-    Tests: `aeslib.aes_core` (existing KATs run against whichever backend
-    the build targets) plus the `qemu-aarch64`/`macos-arm64`/
-    `linux-arm64-native` CI jobs.
-  - `src/aes_core_riscv.cpp` — RV64 scalar crypto (`Zkne`) intrinsics
-    (`aes64esm`/`aes64es` for the round transform, `aes64ks1i`/`aes64ks2`
-    for the key schedule), detected via the `riscv_hwprobe()` syscall.
-    Tests: `aeslib.aes_core` plus the `qemu-riscv64` CI job (a native-hardware
-    leg via the RISE RISC-V Runners service was tried and dropped — see
-    DESIGN.md for why).
-
-  Design: [Additional architectures: ARM AArch64 and RISC-V](DESIGN.md#additional-architectures-arm-aarch64-and-risc-v).
-- **3.3 Additional AES modes.** AES-128 key support plus `AesGcm` (NIST SP
-  800-38D), sharing a templated software backend and a separate AES-NI
-  key-expansion routine; its own `src/ghash.cpp`. CBC was deliberately
-  skipped — both backends are forward-cipher-only, and CBC is a weaker
-  security property than GCM. Tests: `aeslib.gcm` plus AES-128 KATs in
-  `aeslib.aes_core`. Design:
-  [Additional AES modes](DESIGN.md#additional-aes-modes-aes-128--aes-gcm).
-- **3.4 Safer key storage.** `SecretKey::save_to_file_encrypted`/
-  `load_from_file_encrypted` — PBKDF2-HMAC-SHA256 (600,000 iterations) +
-  AES-256-CTR + HMAC-SHA256, encrypt-then-MAC, a versioned wire format
-  supporting both key sizes. Tests: `aeslib.key_storage`. Design:
-  [Safer key storage](DESIGN.md#safer-key-storage).
-- **3.5 Key generation ergonomics.** `SecretKey` has no public raw-byte
-  accessor; `generate()`/`load_from_file()` are `[[nodiscard]]` named
-  factories. Covered incidentally by `aeslib.key`. Design:
-  [Key generation ergonomics](DESIGN.md#key-generation-ergonomics).
-- **3.6 Minimizing key exposure in memory.** `mlock`/`VirtualLock` +
-  `MADV_DONTDUMP`, volatile-write wipe on destruction, raw-syscall file I/O,
-  wiped round-key schedules. Tests:
-  `key.generate_increases_locked_memory_on_linux` plus wipe checks in
-  `aeslib.key`. Design:
-  [Minimizing key exposure in memory](DESIGN.md#minimizing-key-exposure-in-memory).
-- **3.7 Generic types via templates.** `encrypt`/`decrypt_as<T>` overloads on
-  `Aes256Ctr`/`AesGcm` for any byte-viewable `T`, via C++17 SFINAE traits in
-  `include/aeslib/byte_view.hpp`. Tests: `aeslib.generic`. Design:
-  [Generic support for other types via templates](DESIGN.md#generic-support-for-other-types-via-templates).
-- **3.8 Foreign-language interface.** `include/aeslib/capi.h`/`src/capi.cpp`
-  — opaque handles, status codes, explicit buffer ownership, built as
-  `aeslib_c`; `bindings/python/` is the ctypes example (see below). Tests:
-  `aeslib.capi_python`. Design:
-  [Foreign-language interface](DESIGN.md#foreign-language-interface).
-- **3.9 Anything else.** Sanitizer builds (`AESLIB_ENABLE_SANITIZERS`, see
-  "Unit tests" above), a constant-time software S-box to avoid cache-timing
-  leaks in the non-hardware fallback, and a CI matrix that runs the *same*
-  binary under both AES-NI-present and AES-NI-absent emulated CPUs to make
-  the runtime-dispatch claim in 2.2 literal rather than assumed (see
-  "Continuous integration" above).
-- **3.10 Using CMake.** CMake is the sole build system (`CMakeLists.txt`);
-  no other build system is present in this repository.
+| Brief item | What | Design | Tests |
+| --- | --- | --- | --- |
+| 3.1 Unit tests | CTest suite under `tests/` | (this file, "Unit tests" above) | — |
+| 3.2 Additional architectures | ARM AArch64 + RISC-V (RV64 Zkne) hardware backends | [Additional architectures](DESIGN.md#additional-architectures-arm-aarch64-and-risc-v) | `aeslib.aes_core`, `qemu-aarch64`, `qemu-riscv64`, `macos-arm64`, `linux-arm64-native` |
+| 3.3 Additional AES modes | AES-128 key support + AES-GCM | [Additional AES modes](DESIGN.md#additional-aes-modes-aes-128--aes-gcm) | `aeslib.gcm`, `aeslib.aes_core` |
+| 3.4 Safer key storage | Passphrase-wrapped key file (PBKDF2 + AES-CTR + HMAC) | [Safer key storage](DESIGN.md#safer-key-storage) | `aeslib.key_storage` |
+| 3.5 Key generation ergonomics | No raw-byte accessor; `[[nodiscard]]` named factories | [Key generation ergonomics](DESIGN.md#key-generation-ergonomics) | `aeslib.key` |
+| 3.6 Minimizing key exposure in memory | `mlock`/`VirtualLock`, volatile-write wipe, raw-syscall I/O, wiped schedules | [Minimizing key exposure in memory](DESIGN.md#minimizing-key-exposure-in-memory) | `aeslib.key` |
+| 3.7 Generic types via templates | `encrypt`/`decrypt_as<T>` for any byte-viewable `T` | [Generic support via templates](DESIGN.md#generic-support-for-other-types-via-templates) | `aeslib.generic` |
+| 3.8 Foreign-language interface | C ABI (`capi.h`) + Python `ctypes` binding | [Foreign-language interface](DESIGN.md#foreign-language-interface) | `aeslib.capi`, `aeslib.capi_python` |
+| 3.9 Anything else | Sanitizer builds, constant-time S-box, forced-path CI matrix | [Constant-time software S-box](DESIGN.md#constant-time-software-s-box) | see "Continuous integration" above |
+| 3.10 Using CMake | CMake is the sole build system | — | — |
 
 ## AI tool usage disclosure
 

@@ -1,6 +1,10 @@
 # Design
 
-Architecture and reasoning behind the key decisions in this library.
+Architecture and reasoning behind the key decisions in this library. Sections
+1–7 cover the challenge's core requirements (brief §2); "Bonus objectives"
+covers brief §3's optional items, one subsection per item; "Assumptions &
+ambiguities" closes with the cross-cutting tradeoffs and judgment calls
+neither of those two parts is the right place for on its own.
 
 ## Layout
 
@@ -25,16 +29,21 @@ src/                   implementation
   aes_core_ni.cpp        AES forward cipher using AES-NI intrinsics (amd64)
   aes_core_arm.cpp       AES forward cipher using AArch64 Crypto Extensions
                         intrinsics (bonus)
+  aes_core_riscv.cpp     AES forward cipher using RV64 scalar crypto (Zkne)
+                        inline asm (bonus)
   aes_core_hw.cpp        the one file that knows there's more than one
                         hardware backend — arch-neutral aesNNN_..._hw()
-                        wrappers CTR/GCM call instead of _ni/_arm directly
+                        wrappers CTR/GCM call instead of _ni/_arm/_riscv
+                        directly
   aes_key_schedule.hpp   shared FIPS-197 key-expansion template, used by
                         both aes_core_soft.cpp and aes_core_arm.cpp
   ghash.cpp              GF(2^128) multiplication + GHASH for GCM (bonus)
   cpu_detect.cpp          runtime hardware-AES capability check (CPUID on
                         amd64; HWCAP/sysctl/IsProcessorFeaturePresent on
-                        arm64, depending on OS)
+                        arm64; riscv_hwprobe() on riscv64, depending on OS)
   csprng.cpp              OS CSPRNG wrapper
+  sha256.cpp              from-scratch SHA-256/HMAC-SHA256/PBKDF2, used by
+                        key_storage.cpp (bonus)
   key.cpp                key (de)serialization and file I/O
   key_storage.cpp         passphrase-wrapped key storage (bonus)
   container.cpp           ciphertext container (de)serialization and file I/O
@@ -46,6 +55,15 @@ bindings/python/       ctypes binding + demo for capi.h (bonus)
 ```
 
 ## 1. Cryptography core
+
+### Randomness: keys and nonces
+
+Keys and nonces are generated via the OS's native CSPRNG (`BCryptGenRandom`
+on Windows, `getrandom(2)` on Linux, `arc4random_buf` elsewhere,
+`src/csprng.cpp`) — never `rand()`, `std::mt19937`, or any other
+non-cryptographic PRNG, anywhere in the key/nonce path. See "Nonce/IV
+strategy" (§2) below for how the nonce itself is constructed and why a fresh
+random value per encryption was chosen over a persisted counter.
 
 ### AES-256-CTR and the hardware/software split
 
@@ -66,34 +84,37 @@ capable host and the software path on one without, which is what lets one
 binary be correct on both.
 
 What the capability check actually reads depends on the target
-architecture — `CPUID.1:ECX.AESNI` (bit 25) on amd64, or one of three
-OS-specific reads of the AArch64 Crypto Extensions feature bit on arm64 (see
-"Additional architectures" below) — but the caller-facing shape is identical
-either way: `cpu::has_hw_aes()` returns one bool, and `active_backend()`
-turns that into `Backend::Hardware` / `Backend::Software`. `Aes256Ctr` /
-`AesGcm` call `active_backend()` internally to pick which block-encrypt
-function to use; callers of the public API never see this decision, but it's
-exposed as a free function so tests and diagnostics can observe it (the
-`main.cpp` harness prints which path ran).
+architecture — `CPUID.1:ECX.AESNI` (bit 25) on amd64, one of three
+OS-specific reads of the AArch64 Crypto Extensions feature bit on arm64, or
+the `riscv_hwprobe()` syscall's `Zkne` bit on riscv64 (see "Additional
+architectures" below) — but the caller-facing shape is identical either way:
+`cpu::has_hw_aes()` returns one bool, and `active_backend()` turns that into
+`Backend::Hardware` / `Backend::Software`. `Aes256Ctr` / `AesGcm` call
+`active_backend()` internally to pick which block-encrypt function to use;
+callers of the public API never see this decision, but it's exposed as a
+free function so tests and diagnostics can observe it (the `main.cpp`
+harness prints which path ran).
 
-Each hardware backend's intrinsics live in their own translation unit
+Each hardware backend's intrinsics/asm live in their own translation unit
 (`aes_core_ni.cpp` for AES-NI, `aes_core_arm.cpp` for AArch64 Crypto
-Extensions) and are the *only* files compiled with an architecture-specific
-flag (`-maes` / `-march=armv8-a+crypto` on GCC/Clang; see `CMakeLists.txt`).
-Every other file — including the CTR/GCM drivers that call into them —
-stays free of any architecture-specific instruction-set flags. That's what
-makes it safe to ship as one portable binary: the compiler never emits a
-hardware-AES instruction outside those two files, and each is only ever
-called after `cpu::has_hw_aes()` has confirmed the corresponding
-instructions are safe to execute.
+Extensions, `aes_core_riscv.cpp` for RV64 Zkne) and are the *only* files
+compiled with an architecture-specific flag (`-maes` / `-march=armv8-a+crypto`
+/ `-march=rv64gc_zkne` on GCC/Clang; see `CMakeLists.txt`). Every other
+file — including the CTR/GCM drivers that call into them — stays free of any
+architecture-specific instruction-set flags. That's what makes it safe to
+ship as one portable binary: the compiler never emits a hardware-AES
+instruction outside those three files, and each is only ever called after
+`cpu::has_hw_aes()` has confirmed the corresponding instructions are safe to
+execute.
 
-`aes_core_hw.cpp` is the single seam that knows there are now two possible
+`aes_core_hw.cpp` is the single seam that knows there are now three possible
 hardware backends, never more than one real in a given build: it exposes
 arch-neutral `aesNNN_encrypt_block_hw()` wrappers implemented purely as
 `#if`/`#elif` on the target architecture (x86 → `_ni`, arm64 → `_arm`,
-anything else → throws). `aes256_ctr.cpp` / `aes_gcm.cpp` call only `_hw`,
-never `_ni`/`_arm` by name, which is what let ARM support (below) be added
-with a one-line change to each mode driver rather than a rewrite.
+riscv64 → `_riscv`, anything else → throws). `aes256_ctr.cpp` /
+`aes_gcm.cpp` call only `_hw`, never `_ni`/`_arm`/`_riscv` by name, which is
+what let ARM and RISC-V support (below) each be added with a one-line change
+to each mode driver rather than a rewrite.
 
 ### Verifying dispatch is real, not assumed
 
@@ -460,6 +481,10 @@ Nothing in the public API uses output-parameter error codes.
 ---
 
 ## Bonus objectives
+
+All optional and additive per brief §3 — none of this is required for a
+complete submission (§6/§7 above already stand on their own). One subsection
+per item attempted, numbered to match the brief's own §3.*.
 
 ### Additional architectures: ARM AArch64 and RISC-V
 
@@ -1235,8 +1260,62 @@ buffer-ownership-crosses-with-the-allocator principle);
 (the general "ASan must load first" constraint this bonus's Python testing
 ran into).
 
-## Randomness
+---
 
-Keys and nonces are generated via the OS's native CSPRNG (`BCryptGenRandom`
-on Windows, `getrandom(2)` on Linux, `arc4random_buf` elsewhere) — never
-`rand()`, `std::mt19937`, or any other non-cryptographic PRNG.
+## Assumptions & ambiguities
+
+Per the brief's own submission guidance ("in case of ambiguities, point them
+out ... and let us know your assumption and reasoning"), gathered in one
+place, spanning both the core sections and the bonus objectives above — each
+is argued in more depth where cited, this is the index:
+
+- **Container format is deliberately minimal**, not maximal: magic, version,
+  nonce, length, ciphertext — no room for extra metadata beyond what §3
+  requires. Assumed a small, auditable, versioned format was preferable to
+  guessing at fields a future version might want; the version byte is what
+  makes that extensible later without a compatibility break.
+- **CBC was not implemented**; GCM was, instead of it. Both are "an
+  additional mode," but CBC needs a full AES *inverse* cipher in every
+  backend (this codebase implements forward-only AES everywhere) for a
+  strictly weaker security property (confidentiality only, plus a
+  well-known padding-oracle attack class) than GCM. Assumed the brief's
+  "additional AES modes" bonus rewards adding real capability, not
+  specifically CBC by name, so the better use of the same effort was taken.
+  See "Additional AES modes."
+- **OS keystore integration (DPAPI / libsecret) was not built**, despite
+  being named explicitly in §3.4, in favor of passphrase+KDF wrapping.
+  Assumed that a mechanism exercised identically across this project's full
+  CI matrix (Linux/Windows/macOS, native and emulated) was worth more than
+  one that's correct on paper but untestable on most of that matrix (DPAPI
+  is Windows-only; `libsecret` needs a running keyring daemon CI runners
+  don't have). Stated as a disclosed tradeoff in "Safer key storage," not a
+  silent substitution.
+- **The GCM per-key invocation counter (§2) lives on the in-memory
+  `SecretKey` object, not on disk.** Assumed this library's scope is a
+  single process using a key for its own lifetime, not a long-running
+  service needing durable usage accounting across restarts — the latter
+  would need persisted counter state, a materially bigger feature than the
+  brief's "additional modes" bonus implies.
+- **The RISC-V backend is verified under QEMU, not on real silicon** — no
+  native riscv64 CI runner was reliably available (see "Additional
+  architectures"). Assumed an honestly-labeled emulated-only verification
+  was preferable to either skipping the third architecture or silently
+  presenting it as fully hardware-verified.
+- **Nonces are random per encryption, not a persisted stateful counter**
+  (§2), accepting a birthday-bound collision risk (~2^48 for CTR, enforced
+  at 2^32 for GCM) instead of the added complexity of carrying counter
+  state across process restarts. Assumed this library's expected per-key
+  volume is far below that bound, and said so as a real limit, not
+  "impossible" — see "Known limitations" (§6).
+- **All ten Section 3 bonus items were attempted**, despite the brief's own
+  stated preference for a couple of thoughtful partial attempts over
+  maximal coverage. Assumed this was a reasonable call specifically because
+  the hardware/software dispatch split (§1) turned each new backend/mode
+  into an incremental addition behind an existing abstraction rather than
+  new design surface — not because "more bonuses" was treated as
+  inherently better. Under a materially tighter deadline, the priority
+  order would have been unit tests (3.1) → safer key storage (3.4) →
+  minimizing key exposure in memory (3.6), stopping there: those three
+  serve the brief's stated evaluation focus (security judgment,
+  correctness) most directly, ahead of the more demonstrative items
+  (additional architectures, FFI, generic templates).

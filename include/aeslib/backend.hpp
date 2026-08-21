@@ -7,7 +7,8 @@ namespace aeslib {
 // Aes256Ctr never need to look at this.
 enum class Backend {
     Software,  // Portable, no CPU-specific instructions.
-    Hardware,  // AES-NI on amd64, AArch64 Crypto Extensions on arm64.
+    Hardware,  // AES-NI on amd64, AArch64 Crypto Extensions on arm64, RV64
+               // Zkne on riscv64.
 };
 
 // Returns the backend Aes256Ctr will actually use on this machine, decided
