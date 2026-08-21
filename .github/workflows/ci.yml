@@ -117,19 +117,24 @@ jobs:
       - name: Run harness under qemu-aarch64 -cpu max
         run: qemu-aarch64-static -cpu max -L /usr/aarch64-linux-gnu build-aarch64/aes_harness
 
-  # Cross-compiles for riscv64 and runs the result under qemu-riscv64 -cpu
-  # max, asserting (via AESLIB_EXPECTED_BACKEND, see tests/test_backend.cpp)
-  # that active_backend() reports Hardware and that src/aes_core_riscv.cpp's
-  # real implementation (RV64 Zkne scalar crypto intrinsics) produces correct
-  # output under emulation. Mirrors qemu-aarch64 above.
+  # Cross-compiles for riscv64 and runs the result under qemu-riscv64,
+  # asserting (via AESLIB_EXPECTED_BACKEND, see tests/test_backend.cpp) that
+  # active_backend() reports Hardware and that src/aes_core_riscv.cpp's real
+  # implementation (RV64 Zkne scalar crypto) produces correct output under
+  # emulation. Mirrors qemu-aarch64 above.
   #
-  # Unconfirmed as of this job's addition: whether QEMU's `max` CPU model
-  # advertises Zkne/Zknd by default the way its aarch64 models advertise the
-  # AArch64 Crypto Extensions. If the first run of this job shows
-  # active_backend() landing on Software instead of Hardware, the fix is an
-  # explicit `-cpu rv64,zkne=true,zknd=true`-style flag here rather than
-  # `-cpu max` alone — check the actual CI output before assuming either
-  # answer.
+  # `-cpu max,zkne=true`, not `-cpu max` alone: confirmed empirically (this
+  # job's first run) that QEMU's `max` CPU model does NOT advertise Zkne by
+  # default the way its aarch64 models advertise the AArch64 Crypto
+  # Extensions unconditionally — active_backend() landed on Software with
+  # bare `-cpu max`, even though the AES output was still correct (the
+  # software fallback is exercised extensively elsewhere too). `zkne=true`
+  # is a real, accepted QEMU riscv64 CPU property — confirmed directly
+  # against a local QEMU 11.1.0 build; Ubuntu 24.04's qemu-user-static
+  # 8.2.2, this job's actual version, wasn't checked locally, but scalar
+  # crypto support landed in QEMU well before that release — that turns the
+  # extension on for both codegen and the `riscv_hwprobe()` result this
+  # binary's own detection reads.
   qemu-riscv64:
     runs-on: ubuntu-latest
     steps:
@@ -142,12 +147,12 @@ jobs:
         run: cmake -B build-riscv64 -DCMAKE_TOOLCHAIN_FILE=cmake/riscv64-linux-gnu.cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo
       - name: Build
         run: cmake --build build-riscv64 -j
-      - name: Run tests under qemu-riscv64 -cpu max
+      - name: Run tests under qemu-riscv64 -cpu max,zkne=true
         env:
           AESLIB_EXPECTED_BACKEND: hardware
-        run: qemu-riscv64-static -cpu max -L /usr/riscv64-linux-gnu build-riscv64/tests/aeslib_tests
-      - name: Run harness under qemu-riscv64 -cpu max
-        run: qemu-riscv64-static -cpu max -L /usr/riscv64-linux-gnu build-riscv64/aes_harness
+        run: qemu-riscv64-static -cpu max,zkne=true -L /usr/riscv64-linux-gnu build-riscv64/tests/aeslib_tests
+      - name: Run harness under qemu-riscv64 -cpu max,zkne=true
+        run: qemu-riscv64-static -cpu max,zkne=true -L /usr/riscv64-linux-gnu build-riscv64/aes_harness
 
   # Real, non-emulated RISC-V hardware via the RISE RISC-V Runners free CI
   # service (physical Scaleway EM-RV1 servers, SOPHGO SG2044 chip) — the
