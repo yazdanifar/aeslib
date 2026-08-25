@@ -24,9 +24,10 @@ Block encrypt_block(const SecretKey& key, const Block& block) {
     // Decided once per call via the runtime capability check in
     // cpu_detect.cpp — never a compile-time #ifdef, so the same binary is
     // correct whether or not the host CPU has hardware AES acceleration.
-    // aesNNN_encrypt_block_hw() resolves to the AES-NI or ARM Crypto
-    // Extensions backend depending on the build's target architecture (see
-    // aes_core_hw.cpp) — this file never names either directly. Dispatches
+    // aesNNN_encrypt_block_hw() resolves to the AES-NI, ARM Crypto
+    // Extensions, or RV64 Zkne backend depending on the build's target
+    // architecture (see aes_core_hw.cpp) — this file never names any of them
+    // directly. Dispatches
     // on key.size_bytes() the same way AesGcm::encrypt_block does (see
     // aes_gcm.cpp), so an AES-128 SecretKey works here too.
     const bool hw = active_backend() == Backend::Hardware;

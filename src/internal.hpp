@@ -3,7 +3,9 @@
 // Internal-only declarations shared between the library's .cpp files. Not
 // part of the public API in include/aeslib/.
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -11,6 +13,64 @@
 #include "aeslib/key.hpp"
 
 namespace aeslib::detail {
+
+// Definition of the access seam whose name alone is declared in the public
+// include/aeslib/key.hpp. Being defined *here* is what makes SecretKey's
+// "no raw-byte accessor" property enforced rather than merely advertised:
+// the members below are callable only from a translation unit that includes
+// this internal header — the AES backends' key-expansion code,
+// cpu_detect.cpp's hardware self-verification, and the tests — and never
+// from a consumer holding only the public headers.
+struct KeyAccess {
+    static const std::array<std::byte, kKeySizeBytes>& bytes(const SecretKey& key) noexcept {
+        return key.bytes_;
+    }
+
+    // Constructs a SecretKey directly from raw bytes rather than by CSPRNG
+    // generation or file loading. `bytes` must point to at least
+    // static_cast<std::size_t>(size) readable bytes; only that many are
+    // copied, matching load_from_file()'s behavior (unused capacity for a
+    // 16-byte AES-128 key stays zero-filled).
+    static SecretKey from_bytes(const std::byte* bytes, KeySize size) {
+        SecretKey key;
+        key.size_ = size;
+        std::copy_n(bytes, static_cast<std::size_t>(size), key.bytes_.begin());
+        return key;
+    }
+
+    // Atomically increments `key`'s AES-GCM invocation counter and returns
+    // the count *before* this increment.
+    static std::uint64_t consume_gcm_invocation(const SecretKey& key) noexcept {
+        return key.gcm_invocations_.fetch_add(1, std::memory_order_relaxed);
+    }
+};
+
+// The sole raw-byte access path for a SecretKey. See KeyAccess above for why
+// it lives in this header rather than the public one.
+inline const std::array<std::byte, kKeySizeBytes>& key_bytes(const SecretKey& key) noexcept {
+    return KeyAccess::bytes(key);
+}
+
+// Used by cpu_detect.cpp's hardware self-verification (which needs to
+// encrypt a fixed FIPS-197 KAT vector under a fixed key, not a randomly
+// generated one) and by tests.
+inline SecretKey key_from_bytes(const std::byte* bytes, KeySize size) {
+    return KeyAccess::from_bytes(bytes, size);
+}
+
+// Returns how many prior AesGcm::encrypt() calls have already consumed a
+// fresh random nonce under this key object, and counts this one. Used by
+// AesGcm::encrypt() (aes_gcm.cpp) to enforce NIST SP 800-38D §8.3's
+// recommended per-key limit on random-nonce GCM encryptions — see
+// kGcmInvocationLimit below and DESIGN.md's "Nonce/IV strategy". The count
+// lives on the SecretKey object itself (moved along with it, reset by
+// neither copy — which is disabled — nor by reloading the same key bytes
+// from disk into a new SecretKey instance), so it bounds usage within one
+// object's lifetime, not across process restarts; see DESIGN.md for why that
+// gap is accepted rather than closed with persisted state.
+inline std::uint64_t consume_gcm_invocation(const SecretKey& key) noexcept {
+    return KeyAccess::consume_gcm_invocation(key);
+}
 
 inline constexpr std::size_t kBlockSizeBytes = 16;
 using Block = std::array<std::byte, kBlockSizeBytes>;
@@ -141,11 +201,13 @@ private:
 
 namespace aeslib::cpu {
 
-// True if the current CPU advertises a hardware AES acceleration extension:
-// AES-NI (CPUID.1:ECX.AESNI, bit 25) on amd64, or AArch64 Crypto Extensions
-// (HWCAP_AES / hw.optional.arm.FEAT_AES / PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE,
-// depending on OS) on arm64. Computed once and memoized; safe to call
-// repeatedly.
+// True if the current CPU advertises a hardware AES acceleration extension
+// *and* the corresponding backend passes a FIPS-197 known-answer self-test
+// (see cpu_detect.cpp): AES-NI (CPUID.1:ECX.AESNI, bit 25) on amd64, AArch64
+// Crypto Extensions (HWCAP_AES / hw.optional.arm.FEAT_AES /
+// PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE, depending on OS) on arm64, or
+// RV64 Zkne (riscv_hwprobe()) on riscv64. Computed once and memoized; safe
+// to call repeatedly.
 bool has_hw_aes();
 
 } // namespace aeslib::cpu

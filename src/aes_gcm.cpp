@@ -24,9 +24,9 @@ using detail::kBlockSizeBytes;
 constexpr std::uint64_t kMaxBlocks = (std::uint64_t{1} << 32) - 2;
 constexpr std::uint64_t kMaxPlaintextBytes = kMaxBlocks * kBlockSizeBytes;
 
-// aesNNN_encrypt_block_hw() resolves to the AES-NI or ARM Crypto Extensions
-// backend depending on the build's target architecture (see aes_core_hw.cpp)
-// — this file never names either directly.
+// aesNNN_encrypt_block_hw() resolves to the AES-NI, ARM Crypto Extensions, or
+// RV64 Zkne backend depending on the build's target architecture (see
+// aes_core_hw.cpp) — this file never names any of them directly.
 Block encrypt_block(const SecretKey& key, const Block& block) {
     const bool hw = active_backend() == Backend::Hardware;
     if (key.size_bytes() == 16) {

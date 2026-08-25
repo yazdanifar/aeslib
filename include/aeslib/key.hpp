@@ -19,40 +19,20 @@ enum class KeySize : std::uint8_t { Aes128 = 16, Aes256 = 32 };
 class SecretKey;
 
 namespace detail {
-// The sole raw-byte access path for a SecretKey. Deliberately not a public
-// SecretKey member: an ordinary caller of this library has no need to see
-// raw key bytes at all (aes256_ctr.cpp only ever passes SecretKey by const&
-// down to the backends), so nothing invites `auto leaked = key.bytes();` or
-// `std::cout << key.bytes()[0];` — the kind of accidental copy/log that
-// escapes wipe()/mlock() entirely. This is reachable only from the two AES
-// backends' key-expansion code and from tests, both of which reach it the
-// same way tests already reach `ct_sbox` — via this internal-only header.
-// The one sanctioned way for a caller to get key material out of a
-// SecretKey remains the explicit, deliberately-named save_to_file().
-const std::array<std::byte, kKeySizeBytes>& key_bytes(const SecretKey& key) noexcept;
-
-// Constructs a SecretKey directly from raw bytes rather than CSPRNG
-// generation or file loading — used by cpu_detect.cpp's hardware
-// self-verification (which needs to encrypt a fixed FIPS-197 KAT vector, not
-// a randomly generated key) and by tests, the same restricted-audience
-// pattern as key_bytes() above. `bytes` must point to at least
-// static_cast<std::size_t>(size) readable bytes; only that many are copied,
-// matching load_from_file()'s behavior (unused capacity for a 16-byte
-// AES-128 key stays zero-filled).
-SecretKey key_from_bytes(const std::byte* bytes, KeySize size);
-
-// Atomically increments `key`'s AES-GCM invocation counter and returns the
-// count *before* this increment (i.e. how many prior AesGcm::encrypt() calls
-// have already consumed a fresh random nonce under this key object). Used by
-// AesGcm::encrypt() (aes_gcm.cpp) to enforce NIST SP 800-38D §8.3's
-// recommended per-key limit on random-nonce GCM encryptions — see DESIGN.md's
-// "GCM's per-key usage limit is tighter than the raw birthday bound". The
-// count lives on the SecretKey object itself (moved along with it, reset by
-// neither copy — which is disabled — nor by reloading the same key bytes
-// from disk into a new SecretKey instance), so it bounds usage within one
-// object's lifetime, not across process restarts; see DESIGN.md for why that
-// gap is accepted rather than closed with persisted state.
-std::uint64_t consume_gcm_invocation(const SecretKey& key) noexcept;
+// SecretKey's sole raw-byte access seam. Only the *name* is declared here:
+// the definition — and the detail::key_bytes() / key_from_bytes() /
+// consume_gcm_invocation() wrappers over it — live in src/internal.hpp,
+// which nothing outside the library's own .cpp files and the test binary
+// includes. So a consumer holding only these public headers can name this
+// type but has no member of it to call, and therefore no way to read, copy,
+// or print raw key bytes. That's deliberate: an ordinary caller has no need
+// to see them at all (aes256_ctr.cpp only ever passes SecretKey by const&
+// down to the backends), and an ordinary getter would invite
+// `auto leaked = key.bytes();` or `std::cout << key.bytes()[0];` — the kind
+// of accidental copy/log that escapes wipe()/mlock() entirely. The one
+// sanctioned way for a caller to get key material out of a SecretKey
+// remains the explicit, deliberately-named save_to_file().
+struct KeyAccess;
 } // namespace detail
 
 // Move-only holder for a raw AES-256 key. Copy is disabled so a key can't be
@@ -111,9 +91,7 @@ public:
                                                              std::string_view passphrase);
 
 private:
-    friend const std::array<std::byte, kKeySizeBytes>& detail::key_bytes(const SecretKey&) noexcept;
-    friend std::uint64_t detail::consume_gcm_invocation(const SecretKey&) noexcept;
-    friend SecretKey detail::key_from_bytes(const std::byte*, KeySize);
+    friend struct detail::KeyAccess;
 
     SecretKey();
     void wipe() noexcept;
@@ -132,8 +110,8 @@ private:
     // branchy partial-fill logic for a harmless simplification.
     std::array<std::byte, kKeySizeBytes> bytes_{};
     KeySize size_ = KeySize::Aes256;
-    // Counts AesGcm::encrypt() calls made with this key object (see
-    // consume_gcm_invocation above). mutable: AesGcm::encrypt() takes `key`
+    // Counts AesGcm::encrypt() calls made with this key object (advanced via
+    // detail::consume_gcm_invocation(), src/internal.hpp). mutable: AesGcm::encrypt() takes `key`
     // by const&, same as every other consumer, but still needs to advance
     // this counter. Relaxed atomics are enough — this is a usage-budget
     // counter, not a synchronization primitive guarding the key bytes

@@ -4,6 +4,7 @@
 
 #include "aeslib/exceptions.hpp"
 #include "aeslib/key.hpp"
+#include "src/internal.hpp" // detail::key_bytes — deliberately not in the public headers
 #include "test_support.hpp"
 
 #if defined(__linux__)

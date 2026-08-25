@@ -55,10 +55,13 @@ against the input; block encryption is delegated to whichever backend is
 active. CTR only ever needs the forward AES transform, so no backend here
 implements AES decryption.
 
-**Runtime dispatch.** `aeslib::active_backend()` runs a hardware-capability
-check once, memoized in a function-local static, so the choice is made at
+**Runtime dispatch.** `aeslib::active_backend()` consults
+`cpu::has_hw_aes()`, which runs its hardware-capability check once and
+memoizes the result in a function-local static, so the choice is made at
 runtime on whatever machine the binary is running on — never baked in via
-`#ifdef __AES__` or `-march=native`. The capability read is
+`#ifdef __AES__` or `-march=native`. (`active_backend()` itself isn't
+memoized: it re-reads the `AESLIB_FORCE_SOFTWARE` override below on every
+call, which is a `getenv` and a `strcmp`, not a capability probe.) The capability read is
 arch-specific (`CPUID.1:ECX.AESNI` on amd64, an OS-specific AArch64 Crypto
 Extensions read on arm64, `riscv_hwprobe()`'s `Zkne` bit on riscv64), but the
 caller-facing shape is identical: `cpu::has_hw_aes()` returns one bool,
@@ -252,8 +255,9 @@ this repo's own tests.)
 ## 4. Key handling
 
 `SecretKey` is move-only — copying is disabled at the type level — and every
-consumer (`aes256_ctr.cpp`, both AES backends) takes it by `const&`, so no
-incidental copies of the raw key exist anywhere in the library. Its hardened
+consumer (the `aes256_ctr.cpp`/`aes_gcm.cpp` mode drivers, all four AES
+backends, and `key_storage.cpp`) takes it by `const&`, so no incidental
+copies of the raw key exist anywhere in the library. Its hardened
 API surface, storage, and memory-lifetime behavior are covered under the
 bonus sections below.
 
@@ -261,12 +265,21 @@ bonus sections below.
 
 Four exception types cover this library's failure modes: `IoError`
 (filesystem/OS failures), `FormatError` (malformed container/key files),
-`LimitError` (a request exceeds a format-imposed size limit, e.g. the CTR/GCM
-block-count bound or an invalid PBKDF2 iteration count), and
+`LimitError` (a *caller's* request exceeds a bound this library enforces —
+the CTR/GCM block-count limit, GCM's per-key invocation limit, or a PBKDF2
+iteration count below the floor passed to `save_to_file_encrypted()`), and
 `AuthenticationError` (an HMAC or GCM tag fails to verify — kept distinct
 from `FormatError` so callers can tell "ask for the passphrase again" apart
 from "file is unreadable"). Nothing in the public API uses output-parameter
 error codes.
+
+The `LimitError`/`FormatError` split follows *who supplied the bad value*,
+which is why the same out-of-range PBKDF2 iteration count raises different
+types on the two key-storage paths: `save_to_file_encrypted(…, iterations)`
+throws `LimitError`, since the caller passed it in directly, while
+`load_from_file_encrypted()` throws `FormatError`, since there the count came
+out of an untrusted file header and is a property of the file rather than of
+the call.
 
 ## 6. Known limitations / threat model
 
@@ -471,16 +484,25 @@ the way DPAPI/a TPM would provide.
 
 `SecretKey`'s API is designed so misuse takes effort:
 
-- **Named factories, no public default state.** `generate()`/
-  `load_from_file()` are the only ways to obtain one; the default
-  constructor is private, and both factories are `[[nodiscard]]`.
+- **Named factories, no public default state.** `generate()`,
+  `load_from_file()` and `load_from_file_encrypted()` are the only ways to
+  obtain one; the default constructor is private, and all three factories
+  are `[[nodiscard]]`.
 - **Move-only and `final`** — it hand-manages a wipe/lock resource in its
   special members, so copy and subclassing are both closed off.
 - **No public raw-byte accessor.** `bytes()` was removed and replaced with
-  `aeslib::detail::key_bytes()`, a `friend` free function reachable only
-  from `.cpp` files that include `src/internal.hpp` (the AES backends and
-  tests). A consumer of the public headers has no way to read, copy, or
-  print raw key bytes — the only sanctioned way out is `save_to_file()`.
+  `aeslib::detail::key_bytes()`, reachable only from `.cpp` files that
+  include `src/internal.hpp` (the AES backends, `cpu_detect.cpp`, and
+  tests). The enforcement detail matters: `SecretKey`'s sole `friend` is
+  `detail::KeyAccess`, and the public header declares only that struct's
+  *name* — its definition, and the `key_bytes()`/`key_from_bytes()`/
+  `consume_gcm_invocation()` wrappers over it, live in `src/internal.hpp`.
+  A consumer of the public headers can therefore name the type but has no
+  member of it to call, so there is no way to read, copy, or print raw key
+  bytes — the only sanctioned way out is `save_to_file()`. (Declaring those
+  wrappers in the public header instead, as an earlier revision did, would
+  have left `aeslib::detail::key_bytes(key)` compiling and linking for any
+  consumer — `detail` alone is a naming convention, not a barrier.)
 
 This follows the same principle as NaCl's API and Rust's `secrecy` crate:
 one explicit, narrow, auditable access path instead of an ordinary getter.
