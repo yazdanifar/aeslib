@@ -283,36 +283,61 @@ row; this table is just the checklist and test suite to look at.
 
 ## AI tool usage disclosure
 
-Claude (Anthropic) via Claude Code was used as a pair-programmer throughout this submission — code generation, tests, build system, CI, and documentation. **All code was reviewed and understood by the author.**
+**Tools used.** Claude (Anthropic) through Claude Code, as a pair programmer across the whole
+submission — implementation, tests, CMake and CI, and prose. Standards text (FIPS-197,
+SP 800-38A, SP 800-38D, FIPS 180-4, RFC 4231, RFC 7914) was fetched and read directly rather
+than recalled by the model: every vector in `tests/test_reference_vectors.cpp` and
+`src/kat_vector.hpp` is transcribed from a published source, not from model output.
 
-### Where Claude was used
+**How I worked.** I decided the architecture and every security-relevant policy, then used the
+model to write code against those decisions and to argue with me about them. Nothing was
+accepted because it compiled and round-tripped — a round trip can't distinguish a correct
+primitive from an internally self-consistent wrong one, since save and load call the same code.
+That is why the from-scratch SHA-256, HMAC-SHA256, and PBKDF2 primitives are pinned to
+published known-answer vectors.
 
-**Core cryptography** (`src/aes_core_*.cpp`, `src/aes256_ctr.cpp`, `src/aes_gcm.cpp`): Initial AES block processing, CTR counter logic, and GCM operations. Validated against NIST FIPS-197 known-answer test vectors and round-trip tests.
+### Where it was used, and what I owned
 
-**Software AES fallback** (`aes_core_soft.cpp`): Portable S-box and round operations. Author reviewed for constant-time properties (no data-dependent branches) to resist timing attacks.
+<!-- markdownlint-disable MD013 -->
 
-**Hardware backends** (`aes_core_ni.cpp`, `aes_core_arm.cpp`, `aes_core_riscv.cpp`): Intrinsics and inline assembly scaffolding. ISA isolation verified by `verify_isa_isolation.sh` script and CI cross-platform testing (QEMU with forced capabilities, native hardware).
+| Area | Model's role | Mine |
+| --- | --- | --- |
+| Dispatch seam (`aes_core_hw.cpp`, `cpu_detect.cpp`, `aes_core_{ni,arm,riscv}.cpp`) | Intrinsics and the per-architecture CPUID/HWCAP reads | The seam itself (one mode driver → arch-neutral `_hw()` wrapper → per-arch backend), and the self-verification step: a known-answer test runs before the library reports "hardware", so a lying hypervisor or an emulator gap degrades to software instead of producing garbage |
+| Software fallback (`aes_core_soft.cpp`) | Portable S-box and round code | Reviewed for data-dependent branching and table indexing — this is the path that must not leak timing |
+| Key material (`key.cpp`, `key_storage.cpp`) | RAII wrapper, PBKDF2/HMAC, `mlock`/`VirtualLock` plumbing | Move-only handle with volatile wipe, encrypt-then-MAC ordering with the tag covering the header, salt, iteration count and nonce as well as the ciphertext, the iteration-count bounds, and the threat model in DESIGN.md — including what passphrase wrapping does *not* protect against |
+| Nonce and container (`csprng.cpp`, `container.cpp`) | Serialization code | Nonce strategy (a fresh 96-bit CSPRNG nonce per `encrypt()` call, `nonce‖counter` as the CTR input block), the birthday-bound reasoning and its limits, the versioned container header, and the rejection rules for truncated or mismatched files |
+| Build system and CI | CMake scaffold, workflow YAML, first draft of `scripts/verify_isa_isolation.sh` | Per-file ISA flags, the matrix that runs the *same binary* with hardware AES forced on and off, and the disassembly check that proves no AES-NI / Crypto-Extensions / Zkne opcode leaks out of the single translation unit CMake scopes it to |
+| Tests and fuzzing | Harness boilerplate | Which cases matter: counter overflow, partial blocks, nonce freshness, bad magic, truncation, forced-backend equivalence, GCM invocation limits |
+| C ABI and Python binding | `ctypes` scaffolding and glue | Error taxonomy and handle lifetime rules |
+| README and DESIGN.md | Structure, examples, editing | All reasoning, trade-offs, and security claims |
 
-**Hardware detection** (`src/cpu_detect.cpp`): Runtime CPUID/HWCAP reads per-architecture. Author designed self-verification logic (running a known-answer test before reporting "Hardware" is available) to catch hypervisor misreporting and emulator bugs.
+<!-- markdownlint-enable MD013 -->
 
-**Key material** (`src/key.cpp`, `src/key_storage.cpp`, `include/aeslib/key.hpp`): Move-only `SecretKey` RAII wrapper, volatile secure-zero on destruction, `mlock`/`VirtualLock` against swap. Passphrase-wrapped keys use encrypt-then-MAC (PBKDF2 + AES-CTR + HMAC), validated by `aeslib.key_storage` tests.
+### Three things the model got wrong that I caught
 
-**Build system** (`CMakeLists.txt`): CMake scaffold extended by author with per-file ISA flags, platform-specific defines, CTest integration, sanitizer builds, and fuzzing targets.
+These are the honest evidence that the output was read rather than shipped:
 
-**Tests** (`tests/`, `fuzz/`): Test harnesses generated; author wrote meaningful test cases: nonce freshness, partial blocks, counter overflow, known-answer vectors, container edge cases (bad magic, truncation), hardware/software dispatch assertions.
+1. **`hmac_sha256` sized a fixed 64 KB stack buffer on every call** and silently truncated
+   oversized input. In PBKDF2's inner loop that path runs about 1.2M times at the default
+   600,000 iterations, always with exactly 32 bytes of input. Found during a verification pass
+   against RFC 4231; replaced with buffers sized to the actual input, and the missing
+   primitive-level KATs were added (`a930449`).
+2. **`SecretKey`'s move constructor and move assignment never carried `size_`**, so a moved
+   AES-128 key reported itself as AES-256 over storage whose top 16 bytes are zero — wrong
+   ciphertext rather than a visible failure. Reachable from the shipped C ABI, since
+   `aeslib_key_generate(128, ...)` move-constructs the opaque handle. Fixed with three
+   regression tests; the pre-existing move test missed it because it only ever exercised a
+   256-bit key (`a21cd1a`).
+3. **DESIGN.md asserted that no `getenv` call exists under `src/`**, while `cpu_detect.cpp`
+   reads `AESLIB_FORCE_SOFTWARE` inside `active_backend()` in the shipped library.
+   Plausible-sounding documentation that contradicted the code; corrected, and the real
+   behaviour and its risk are now stated (`2db9a92`).
 
-**Documentation** (`README.md`, `DESIGN.md`): Structure and examples by Claude; author wrote all architectural reasoning, security justifications, and nonce-strategy explanation.
+### What I can answer for
 
-**Foreign-language interface** (`capi.h`, `src/capi.cpp`, `bindings/python/`): C ABI and Python ctypes scaffolding; author designed error taxonomy and handle lifetime safety.
-
-### What author designed and validated
-
-- Dispatch seam architecture (one mode driver → arch-neutral `_hw()` wrapper → per-architecture backend).
-- Security policies: nonce strategy (16-byte random IV), key wipe method (volatile write), `mlock` usage, encrypt-then-MAC order.
-- ISA isolation guarantee via disassembly check.
-- CI matrix forcing both AES-NI on/off to prove same binary works on both capable and incapable machines.
-- Platform-specific debugging (Windows SDK versions, QEMU hwprobe workarounds, sanitizer runtime issues).
-
-### Confidence
-
-Author has traced the full code path: plaintext → `Aes256Ctr::encrypt()` → CTR blocks → `aes256_encrypt_block_hw()` → active backend (hardware intrinsics or software S-box) → on-disk container serialization. Understands why constant-time S-box resists timing attacks, why `SecretKey` prevents accidental serialization, why truncated container reads are rejected, and how test suite exercises both hardware paths.
+I can walk any part of this end to end: plaintext → `Aes256Ctr::encrypt()` → CTR keystream
+blocks → `aes256_encrypt_block_hw()` → the backend selected at runtime → container
+serialization, and back. Ask me why the software S-box is written the way it is, why
+`SecretKey` is move-only with no raw-byte accessor, why the MAC covers the header and not just
+the ciphertext, or why the CI matrix is shaped the way it is — including the parts I would do
+differently with more time.
