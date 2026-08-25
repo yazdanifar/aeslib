@@ -40,6 +40,40 @@ AESLIB_TEST(key, move_from_wipes_source) {
     for (const std::byte b : aeslib::detail::key_bytes(original)) CHECK(b == std::byte{0});
 }
 
+// Regression: the move operations must carry `size_` across, not just the
+// key bytes. When they didn't, a moved AES-128 key reported itself as
+// AES-256 — reachable in practice through the C ABI, whose opaque handle is
+// move-constructed on the way into its unique_ptr (src/capi.cpp), so
+// aeslib_key_generate(128, ...) persisted a 32-byte key file.
+AESLIB_TEST(key, move_preserves_key_size) {
+    SecretKey original = SecretKey::generate(aeslib::KeySize::Aes128);
+    const SecretKey moved = std::move(original);
+    CHECK(moved.size() == aeslib::KeySize::Aes128);
+    CHECK(moved.size_bytes() == 16);
+}
+
+AESLIB_TEST(key, move_assign_preserves_key_size) {
+    SecretKey source = SecretKey::generate(aeslib::KeySize::Aes128);
+    SecretKey target = SecretKey::generate(aeslib::KeySize::Aes256);
+    target = std::move(source);
+    CHECK(target.size() == aeslib::KeySize::Aes128);
+    CHECK(target.size_bytes() == 16);
+}
+
+// The same property observed end-to-end: a moved AES-128 key must still
+// serialize as one (2-byte header + 16 key bytes), not as an AES-256 key.
+AESLIB_TEST(key, moved_aes128_key_saves_as_aes128) {
+    SecretKey original = SecretKey::generate(aeslib::KeySize::Aes128);
+    const SecretKey moved = std::move(original);
+    const auto path = std::filesystem::temp_directory_path() / "aeslib_test_moved_128.key";
+    moved.save_to_file(path);
+    const SecretKey loaded = SecretKey::load_from_file(path);
+    const auto size = std::filesystem::file_size(path);
+    std::filesystem::remove(path);
+    CHECK(size == 18);
+    CHECK(loaded.size() == aeslib::KeySize::Aes128);
+}
+
 AESLIB_TEST(key, load_missing_file_throws_io_error) {
     const auto path = std::filesystem::temp_directory_path() / "aeslib_test_missing.key";
     CHECK_THROWS(SecretKey::load_from_file(path), IoError);

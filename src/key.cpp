@@ -47,8 +47,13 @@ KeySize SecretKey::size() const noexcept { return size_; }
 
 std::size_t SecretKey::size_bytes() const noexcept { return static_cast<std::size_t>(size_); }
 
+// Every member that describes the key must move with it — `size_` included.
+// Leaving it at its default (Aes256) here would silently promote a moved
+// AES-128 key to AES-256 over storage whose top 16 bytes may be zero (see
+// load_from_file), producing wrong ciphertext rather than a visible failure.
 SecretKey::SecretKey(SecretKey&& other) noexcept
-    : bytes_(other.bytes_), gcm_invocations_(other.gcm_invocations_.load(std::memory_order_relaxed)) {
+    : bytes_(other.bytes_), size_(other.size_),
+      gcm_invocations_(other.gcm_invocations_.load(std::memory_order_relaxed)) {
     lock_memory();
     other.wipe();
 }
@@ -57,6 +62,7 @@ SecretKey& SecretKey::operator=(SecretKey&& other) noexcept {
     if (this != &other) {
         wipe();
         bytes_ = other.bytes_;
+        size_ = other.size_;
         gcm_invocations_.store(other.gcm_invocations_.load(std::memory_order_relaxed), std::memory_order_relaxed);
         lock_memory();
         other.wipe();
