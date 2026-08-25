@@ -503,10 +503,11 @@ one explicit, narrow, auditable access path instead of an ordinary getter.
   locking path uniform across platforms.
 - **Raw `write`/`read` (not `iostream`) in the key file-I/O path**, since an
   iostream `streambuf` is an incidental, unwiped extra copy.
-- **The derived key schedule is wiped too, not just the key** — both AES
-  backends zero their local per-block round-key schedule immediately after
-  its last use, since it spends more aggregate time in stack memory than the
-  key itself does (expanded once per 16-byte block).
+- **The derived key schedule is wiped too, not just the key** — every AES
+  backend (AES-NI, ARM, RISC-V, and software) zeroes its local per-block
+  round-key schedule immediately after its last use, since it spends more
+  aggregate time in stack memory than the key itself does (expanded once per
+  16-byte block).
 
 **Threat model.** Protects against key/schedule bytes surviving in a
 post-lifetime stack/heap dump, key material in swap/pagefile or a Linux core
