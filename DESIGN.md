@@ -128,10 +128,20 @@ through the real hardware backend and only returns `true` if both match the
 published ciphertext (`detail::kat_matches()`, `src/internal.hpp`). This
 runs once, inside the same memoizing `static` as the capability read, so it
 costs two block encryptions at process startup, not per call.
-`AESLIB_FORCE_SOFTWARE` (read only by `tests/test_backend.cpp`, never by
-production code) forces the software path for testing it on hardware-capable
-machines; there's no `FORCE_HARDWARE`, since forcing an unsupported
-instruction would `SIGILL`.
+`AESLIB_FORCE_SOFTWARE` is this library's "forced-path override for
+testing": set it in the environment and `active_backend()` returns
+`Software` regardless of what the CPU supports, so the fallback path can be
+exercised on a machine that has AES-NI. It is read in the shipped library
+(`src/cpu_detect.cpp`), not only in tests — deliberately, because CI runs
+the *default* build's full suite under it, and a compile-time gate would
+mean the binary that gets tested and the binary a reviewer builds are not
+the same one. It is one-directional by design: it can only downgrade
+Hardware → Software, never the reverse, so the worst a set variable can do
+is cost performance, never correctness. There's no `FORCE_HARDWARE`, since
+forcing an unsupported instruction would `SIGILL`. The override is also not
+what proves dispatch works — that comes from the `qemu-aes-on`/`qemu-aes-off`
+pair running one binary against a real capability bit (see ["Verifying
+dispatch is real, not assumed"](#verifying-dispatch-is-real-not-assumed)).
 
 ### Constant-time software S-box
 
@@ -283,9 +293,15 @@ error codes.
 
 ## 7. Test/production isolation
 
-- `AESLIB_EXPECTED_BACKEND` (the env var CI uses to assert which dispatch
-  path ran) is read in exactly one place, `tests/test_backend.cpp`. No
-  `getenv` call exists under `src/` or `include/` — production dispatch is
+- Exactly two environment variables exist, both scoped to testing.
+  `AESLIB_EXPECTED_BACKEND` (the env var CI uses to assert which dispatch
+  path ran) is read in exactly one place, `tests/test_backend.cpp`, and has
+  no effect on library behavior. `AESLIB_FORCE_SOFTWARE` is read in
+  `src/cpu_detect.cpp` — the one deliberate exception to test/production
+  isolation, argued in ["Functional self-verification of the hardware
+  path"](#functional-self-verification-of-the-hardware-path) — and can only
+  downgrade to the always-correct software path. No other `getenv` call
+  exists under `src/` or `include/`; absent both variables, dispatch is
   driven purely by the hardware-capability check.
 - `src/internal.hpp` (the internals tests need directly) is included only by
   production `.cpp` files, never by anything under `include/aeslib/`.
