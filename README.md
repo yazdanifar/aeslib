@@ -86,8 +86,9 @@ The generated executable is at `build\Release\aes_harness.exe` (or
 
 No external dependencies are fetched by the build — the software AES
 fallback and the CSPRNG are both implemented directly against the standard
-library and OS APIs (`BCryptGenRandom` on Windows, `getrandom(2)` on
-Linux), so there is nothing else to install.
+library and OS APIs (`BCryptGenRandom` on Windows, `getrandom(2)` on Linux,
+`arc4random_buf` on other POSIX platforms such as macOS/BSD), so there is
+nothing else to install.
 
 ## Running the test harness
 
@@ -115,9 +116,12 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-Ten suites are registered (source under `tests/`, one file per suite unless
-noted); see each one's linked DESIGN.md section for what it's actually
-checking and why:
+Eleven tests are registered with CTest. Ten are C++ suites under `tests/`
+(one file per suite unless noted), listed below; the eleventh,
+`aeslib.capi_python`, runs the Python binding against the C ABI and is
+described under ["Foreign-language interface"](#foreign-language-interface).
+See each suite's linked DESIGN.md section for what it's actually checking
+and why:
 
 | Suite | Covers | Design reasoning |
 | --- | --- | --- |

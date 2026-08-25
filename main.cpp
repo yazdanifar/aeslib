@@ -30,6 +30,8 @@ constexpr std::string_view kHardwareBackendName =
     "Hardware (AES-NI)";
 #elif defined(__aarch64__) || defined(_M_ARM64)
     "Hardware (ARM Crypto Extensions)";
+#elif defined(__riscv) && __riscv_xlen == 64
+    "Hardware (RV64 Zkne)";
 #else
     "Hardware";
 #endif

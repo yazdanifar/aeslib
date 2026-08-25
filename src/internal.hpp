@@ -153,7 +153,8 @@ bool has_hw_aes();
 namespace aeslib::rng {
 
 // Fills `buffer` with cryptographically secure random bytes from the OS
-// CSPRNG (BCryptGenRandom on Windows, getrandom(2) on Linux/other POSIX).
+// CSPRNG: BCryptGenRandom on Windows, getrandom(2) on Linux, and
+// arc4random_buf on other POSIX platforms (macOS/BSD) — see csprng.cpp.
 // Throws IoError if the OS source is unavailable or returns an error.
 void fill_random(std::byte* buffer, std::size_t size);
 

@@ -29,7 +29,7 @@ add_library(aeslib STATIC
 target_include_directories(aeslib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(aeslib PUBLIC cxx_std_17)
 # Lets the static aeslib archive be linked into the aeslib_c shared library
-# below (see bonus 3.7 "Foreign-language interface") without a Linux/macOS
+# below (see bonus 3.8 "Foreign-language interface") without a Linux/macOS
 # textrel/relocation build failure; negligible cost for a static lib.
 set_target_properties(aeslib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -68,11 +68,13 @@ else()
     # one translation unit should ever emit them.
     set_source_files_properties(src/aes_core_arm.cpp PROPERTIES COMPILE_OPTIONS "-march=armv8-a+crypto")
   elseif(AESLIB_TARGET_IS_RISCV64)
-    # Same rationale, scoped to aes_core_riscv.cpp: the RV64 scalar crypto
-    # (Zkne) intrinsics need the zkne extension enabled on GCC/Clang. Zkne
-    # alone is enough — aes64es/aes64esm/aes64ks1i/aes64ks2 (this file's only
-    # intrinsics) are all available under Zkne per <riscv_crypto.h>'s feature
-    # guards; Zknd (decryption: aes64ds/aes64dsm/aes64im) is never used,
+    # Same rationale, scoped to aes_core_riscv.cpp: that file emits the RV64
+    # scalar crypto (Zkne) instructions as raw inline-asm mnemonics rather
+    # than <riscv_crypto.h> intrinsics (see its file-level comment for why),
+    # so this flag is what authorizes the *assembler* to accept them. Zkne
+    # alone is enough — aes64es/aes64esm/aes64ks1i/aes64ks2 are this file's
+    # only AES instructions, and all four are Zkne; Zknd (decryption:
+    # aes64ds/aes64dsm/aes64im) is never used,
     # since CTR/GCM only ever need the forward cipher, same as every other
     # backend. Unlike x86's additive -maes, GCC/Clang's RISC-V -march=
     # replaces rather than extends the target's base ISA string, so this
@@ -87,7 +89,7 @@ if(WIN32)
   target_link_libraries(aeslib PRIVATE bcrypt)
 endif()
 
-# Reviewers are told this will be checked under sanitizers (brief 2.9); one
+# Reviewers are told this will be checked under sanitizers (brief 2.7); one
 # flag opts both the library and the tests in rather than requiring a
 # separate sanitizer build script.
 option(AESLIB_ENABLE_SANITIZERS "Build with -fsanitize=address,undefined" OFF)
@@ -103,7 +105,7 @@ endif()
 add_executable(aes_harness main.cpp)
 target_link_libraries(aes_harness PRIVATE aeslib)
 
-# Bonus 3.7 "Foreign-language interface": a C-compatible ABI (include/aeslib/capi.h,
+# Bonus 3.8 "Foreign-language interface": a C-compatible ABI (include/aeslib/capi.h,
 # src/capi.cpp) built as a shared library so it can be dlopen()'d/LoadLibrary()'d
 # from another language's runtime (see bindings/python/ for the Python example).
 option(AESLIB_BUILD_C_API "Build the aeslib_c C ABI shared library (bonus: foreign-language interface)" ON)

@@ -1,4 +1,4 @@
-/* aeslib C ABI — bonus 3.7 ("Foreign-language interface").
+/* aeslib C ABI — bonus 3.8 ("Foreign-language interface").
  *
  * Pure C (no C++ constructs), extern "C" linkage, opaque handles, and
  * status-code error reporting — the standard shape for exposing a C++

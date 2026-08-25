@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal cross-language demo for aeslib's C ABI (bonus 3.7).
+"""Minimal cross-language demo for aeslib's C ABI (bonus 3.8).
 
 Mirrors main.cpp's harness shape but calls exclusively through the C ABI
 (aeslib_ffi.py, a ctypes binding around include/aeslib/capi.h) rather than
