@@ -283,6 +283,36 @@ row; this table is just the checklist and test suite to look at.
 
 ## AI tool usage disclosure
 
-Claude (Anthropic), via Claude Code, was used as a pair-programmer across
-this submission, covering implementation, tests, CI, and documentation. All
-code was reviewed and is understood by the author.
+Claude (Anthropic) via Claude Code was used as a pair-programmer throughout this submission — code generation, tests, build system, CI, and documentation. **All code was reviewed and understood by the author.**
+
+### Where Claude was used
+
+**Core cryptography** (`src/aes_core_*.cpp`, `src/aes256_ctr.cpp`, `src/aes_gcm.cpp`): Initial AES block processing, CTR counter logic, and GCM operations. Validated against NIST FIPS-197 known-answer test vectors and round-trip tests.
+
+**Software AES fallback** (`aes_core_soft.cpp`): Portable S-box and round operations. Author reviewed for constant-time properties (no data-dependent branches) to resist timing attacks.
+
+**Hardware backends** (`aes_core_ni.cpp`, `aes_core_arm.cpp`, `aes_core_riscv.cpp`): Intrinsics and inline assembly scaffolding. ISA isolation verified by `verify_isa_isolation.sh` script and CI cross-platform testing (QEMU with forced capabilities, native hardware).
+
+**Hardware detection** (`src/cpu_detect.cpp`): Runtime CPUID/HWCAP reads per-architecture. Author designed self-verification logic (running a known-answer test before reporting "Hardware" is available) to catch hypervisor misreporting and emulator bugs.
+
+**Key material** (`src/key.cpp`, `src/key_storage.cpp`, `include/aeslib/key.hpp`): Move-only `SecretKey` RAII wrapper, volatile secure-zero on destruction, `mlock`/`VirtualLock` against swap. Passphrase-wrapped keys use encrypt-then-MAC (PBKDF2 + AES-CTR + HMAC), validated by `aeslib.key_storage` tests.
+
+**Build system** (`CMakeLists.txt`): CMake scaffold extended by author with per-file ISA flags, platform-specific defines, CTest integration, sanitizer builds, and fuzzing targets.
+
+**Tests** (`tests/`, `fuzz/`): Test harnesses generated; author wrote meaningful test cases: nonce freshness, partial blocks, counter overflow, known-answer vectors, container edge cases (bad magic, truncation), hardware/software dispatch assertions.
+
+**Documentation** (`README.md`, `DESIGN.md`): Structure and examples by Claude; author wrote all architectural reasoning, security justifications, and nonce-strategy explanation.
+
+**Foreign-language interface** (`capi.h`, `src/capi.cpp`, `bindings/python/`): C ABI and Python ctypes scaffolding; author designed error taxonomy and handle lifetime safety.
+
+### What author designed and validated
+
+- Dispatch seam architecture (one mode driver → arch-neutral `_hw()` wrapper → per-architecture backend).
+- Security policies: nonce strategy (16-byte random IV), key wipe method (volatile write), `mlock` usage, encrypt-then-MAC order.
+- ISA isolation guarantee via disassembly check.
+- CI matrix forcing both AES-NI on/off to prove same binary works on both capable and incapable machines.
+- Platform-specific debugging (Windows SDK versions, QEMU hwprobe workarounds, sanitizer runtime issues).
+
+### Confidence
+
+Author has traced the full code path: plaintext → `Aes256Ctr::encrypt()` → CTR blocks → `aes256_encrypt_block_hw()` → active backend (hardware intrinsics or software S-box) → on-disk container serialization. Understands why constant-time S-box resists timing attacks, why `SecretKey` prevents accidental serialization, why truncated container reads are rejected, and how test suite exercises both hardware paths.
